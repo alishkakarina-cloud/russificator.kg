@@ -1,15 +1,22 @@
 // Вставить в Supabase Dashboard -> Edge Functions -> Create a new function
 // (имя функции: telegram-webhook) -> вставить этот код -> Deploy.
 //
-// Перед деплоем добавить секрет: Edge Functions -> Manage secrets ->
+// Перед деплоем добавить секреты: Edge Functions -> Manage secrets ->
 //   TELEGRAM_BOT_TOKEN = <токен бота>
+//   TELEGRAM_WEBHOOK_SECRET = <случайная строка, та же, что передана в setWebhook secret_token>
 // SUPABASE_URL и SUPABASE_SERVICE_ROLE_KEY подставляются автоматически.
 //
-// После деплоя сообщить URL функции, чтобы прописать его в Telegram как webhook.
+// Паттерн (токен в /start, подтверждение личности через вебхук, проверка
+// секрета заголовком) — тот же, что в проекте Trecker
+// (app/api/telegram-webhook). Отличие russificator.kg: после подтверждения
+// личности доступ не открывается сразу — вместо этого обоим админам уходит
+// сообщение с кнопками Принять/Отклонить, и только их решение меняет статус
+// на approved/rejected.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const TELEGRAM_BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN')!;
+const TELEGRAM_WEBHOOK_SECRET = Deno.env.get('TELEGRAM_WEBHOOK_SECRET')!;
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
@@ -17,6 +24,10 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const ADMIN_CHAT_IDS = [7155433371, 8106761823];
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+function isFromTelegram(req: Request): boolean {
+  return req.headers.get('x-telegram-bot-api-secret-token') === TELEGRAM_WEBHOOK_SECRET;
+}
 
 async function tg(method: string, payload: unknown) {
   const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, {
@@ -28,80 +39,89 @@ async function tg(method: string, payload: unknown) {
 }
 
 Deno.serve(async (req) => {
+  if (!isFromTelegram(req)) {
+    return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 });
+  }
+
   const update = await req.json().catch(() => null);
-  if (!update) return new Response('ok');
+  if (!update) return new Response(JSON.stringify({ ok: true }));
 
-  // 1) Пользователь нажал Start по диплинку из приложения: "/start <session_id>"
-  if (update.message?.text?.startsWith('/start')) {
-    const parts = update.message.text.trim().split(/\s+/);
-    const sessionId = parts[1];
-    const from = update.message.from;
+  // 1) Пользователь нажал Start по диплинку из приложения: "/start <token>"
+  //    — подтверждаем личность, но доступ пока не даём, а зовём админов.
+  const message = update.message;
+  if (message?.text?.startsWith('/start ')) {
+    const token = message.text.slice('/start '.length).trim();
+    const from = message.from;
 
-    if (sessionId) {
-      const { data: row } = await supabase
-        .from('login_requests')
-        .update({
-          telegram_id: from.id,
-          telegram_username: from.username ?? null,
-          status: 'pending_admin',
-        })
-        .eq('session_id', sessionId)
-        .eq('status', 'awaiting_telegram_start')
-        .select()
-        .maybeSingle();
+    const { data: row } = await supabase
+      .from('telegram_login_tokens')
+      .update({
+        telegram_user: {
+          id: from.id,
+          first_name: from.first_name,
+          last_name: from.last_name ?? null,
+          username: from.username ?? null,
+        },
+        confirmed_at: new Date().toISOString(),
+        status: 'pending_admin',
+      })
+      .eq('token', token)
+      .eq('status', 'pending_telegram')
+      .select()
+      .maybeSingle();
 
-      if (row) {
+    if (row) {
+      await tg('sendMessage', {
+        chat_id: from.id,
+        text: 'Личность подтверждена. Заявка отправлена администратору — ожидайте решения.',
+      });
+      const label = from.username ? `@${from.username}` : `id ${from.id}`;
+      const name = [from.first_name, from.last_name].filter(Boolean).join(' ');
+      for (const adminId of ADMIN_CHAT_IDS) {
         await tg('sendMessage', {
-          chat_id: from.id,
-          text: 'Заявка отправлена администратору. Ожидайте подтверждения.',
-        });
-        const label = from.username ? `@${from.username}` : `id ${from.id}`;
-        for (const adminId of ADMIN_CHAT_IDS) {
-          await tg('sendMessage', {
-            chat_id: adminId,
-            text: `Запрос на вход в russificator.kg\nПользователь: ${label} (id ${from.id})`,
-            reply_markup: {
-              inline_keyboard: [[
-                { text: '✅ Принять', callback_data: `approve:${sessionId}` },
-                { text: '⛔ Отклонить', callback_data: `reject:${sessionId}` },
-              ]],
-            },
-          });
-        }
-      } else {
-        await tg('sendMessage', {
-          chat_id: from.id,
-          text: 'Заявка не найдена или уже обработана. Попробуйте войти в приложении заново.',
+          chat_id: adminId,
+          text: `Запрос на вход в russificator.kg\n${name} (${label})\nВремя: ${new Date().toLocaleString('ru-RU')}`,
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '✅ Принять', callback_data: `approve:${token}` },
+              { text: '⛔ Отклонить', callback_data: `reject:${token}` },
+            ]],
+          },
         });
       }
+    } else {
+      await tg('sendMessage', {
+        chat_id: from.id,
+        text: 'Ссылка для входа устарела — вернитесь в приложение и нажмите «Войти через Telegram» ещё раз.',
+      });
     }
-    return new Response('ok');
+    return new Response(JSON.stringify({ ok: true }));
   }
 
   // 2) Админ нажал "Принять" / "Отклонить"
-  if (update.callback_query) {
-    const cq = update.callback_query;
+  const cq = update.callback_query;
+  if (cq) {
     const adminId = cq.from.id;
-    const [action, sessionId] = (cq.data ?? '').split(':');
+    const [action, token] = (cq.data ?? '').split(':');
 
     if (!ADMIN_CHAT_IDS.includes(adminId)) {
       await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'Нет прав.', show_alert: true });
-      return new Response('ok');
+      return new Response(JSON.stringify({ ok: true }));
     }
 
     if (action !== 'approve' && action !== 'reject') {
       await tg('answerCallbackQuery', { callback_query_id: cq.id });
-      return new Response('ok');
+      return new Response(JSON.stringify({ ok: true }));
     }
 
     const { data: row } = await supabase
-      .from('login_requests')
+      .from('telegram_login_tokens')
       .update({
         status: action === 'approve' ? 'approved' : 'rejected',
         decided_at: new Date().toISOString(),
         decided_by: adminId,
       })
-      .eq('session_id', sessionId)
+      .eq('token', token)
       .eq('status', 'pending_admin')
       .select()
       .maybeSingle();
@@ -117,8 +137,8 @@ Deno.serve(async (req) => {
       text: `${cq.message.text}\n\n${resultText}`,
     });
 
-    return new Response('ok');
+    return new Response(JSON.stringify({ ok: true }));
   }
 
-  return new Response('ok');
+  return new Response(JSON.stringify({ ok: true }));
 });

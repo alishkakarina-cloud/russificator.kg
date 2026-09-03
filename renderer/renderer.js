@@ -1,12 +1,24 @@
+// Паттерн вход-через-Telegram (токен + вебхук + поллинг) взят из проекта
+// Trecker (app/api/telegram-login/*, app/api/telegram-webhook) и адаптирован
+// под Electron: открытие t.me-ссылки идёт через системный браузер
+// (shell.openExternal), а не через window.open, генерация токена — через
+// Edge Function telegram-login-start вместо серверного API-роута Next.js.
+// Отличие от Trecker: после подтверждения личности в Telegram доступ не
+// открывается сразу — решение принимают администраторы кнопками в боте, и
+// клиент продолжает поллинг статуса без тайм-аута, пока не придёт решение.
+
 const { SUPABASE_URL, SUPABASE_ANON_KEY, BOT_USERNAME } = window.APP_CONFIG;
 const POLL_INTERVAL_MS = 2500;
-const STORAGE_KEY = 'russificator_session_id';
+const STORAGE_KEY = 'russificator_login_token';
 
 const screens = {
   login: document.getElementById('screen-login'),
   waiting: document.getElementById('screen-waiting'),
+  rejected: document.getElementById('screen-rejected'),
   main: document.getElementById('screen-main'),
 };
+const waitingText = document.getElementById('waiting-text');
+const loginStatus = document.getElementById('login-status');
 
 let pollTimer = null;
 
@@ -32,21 +44,24 @@ async function supabaseRequest(path, options = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-function createLoginRequest(sessionId) {
-  return supabaseRequest('login_requests', {
+async function startTelegramLoginToken() {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/telegram-login-start`, {
     method: 'POST',
-    headers: { Prefer: 'return=representation' },
-    body: JSON.stringify({
-      session_id: sessionId,
-      method: 'telegram',
-      status: 'awaiting_telegram_start',
-    }),
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    },
   });
+  if (!res.ok) {
+    throw new Error(`Не удалось начать вход (${res.status}): ${await res.text()}`);
+  }
+  const { token } = await res.json();
+  return token;
 }
 
-async function fetchLoginRequestStatus(sessionId) {
+async function fetchTokenStatus(token) {
   const rows = await supabaseRequest(
-    `login_requests?session_id=eq.${encodeURIComponent(sessionId)}&select=status`
+    `telegram_login_tokens?token=eq.${encodeURIComponent(token)}&select=status`
   );
   return rows && rows.length ? rows[0].status : null;
 }
@@ -58,27 +73,32 @@ function stopPolling() {
   }
 }
 
-function startPolling(sessionId) {
+function applyStatus(status) {
+  if (status === 'pending_telegram') {
+    waitingText.textContent = 'Нажмите Start в открывшемся чате с ботом...';
+  } else if (status === 'pending_admin') {
+    waitingText.textContent = 'Ожидание подтверждения администратора...';
+  } else if (status === 'approved') {
+    stopPolling();
+    localStorage.removeItem(STORAGE_KEY);
+    showScreen('main');
+  } else if (status === 'rejected') {
+    stopPolling();
+    localStorage.removeItem(STORAGE_KEY);
+    showScreen('rejected');
+  } else if (status === null) {
+    stopPolling();
+    localStorage.removeItem(STORAGE_KEY);
+    showScreen('login');
+  }
+}
+
+function startPolling(token) {
   stopPolling();
+  // Без тайм-аута: запрос висит до явного решения администратора.
   pollTimer = setInterval(async () => {
     try {
-      const status = await fetchLoginRequestStatus(sessionId);
-      if (status === 'approved') {
-        stopPolling();
-        localStorage.setItem(STORAGE_KEY, sessionId);
-        showScreen('main');
-      } else if (status === 'rejected') {
-        stopPolling();
-        localStorage.removeItem(STORAGE_KEY);
-        document.getElementById('login-status').textContent =
-          'Вход отклонён администратором.';
-        showScreen('login');
-      } else if (status === null) {
-        stopPolling();
-        localStorage.removeItem(STORAGE_KEY);
-        showScreen('login');
-      }
-      // awaiting_telegram_start / pending_admin — просто продолжаем ждать
+      applyStatus(await fetchTokenStatus(token));
     } catch (err) {
       console.error(err);
     }
@@ -86,15 +106,14 @@ function startPolling(sessionId) {
 }
 
 async function beginTelegramLogin() {
-  const loginStatus = document.getElementById('login-status');
   loginStatus.textContent = '';
   try {
-    const sessionId = crypto.randomUUID();
-    await createLoginRequest(sessionId);
-    localStorage.setItem(STORAGE_KEY, sessionId);
-    await window.app.openExternal(`https://t.me/${BOT_USERNAME}?start=${sessionId}`);
+    const token = await startTelegramLoginToken();
+    localStorage.setItem(STORAGE_KEY, token);
+    await window.app.openExternal(`https://t.me/${BOT_USERNAME}?start=${token}`);
     showScreen('waiting');
-    startPolling(sessionId);
+    applyStatus('pending_telegram');
+    startPolling(token);
   } catch (err) {
     loginStatus.textContent = 'Ошибка входа: ' + err.message;
   }
@@ -106,19 +125,24 @@ function cancelLogin() {
   showScreen('login');
 }
 
+function retryLogin() {
+  showScreen('login');
+}
+
 async function resumeExistingSession() {
-  const sessionId = localStorage.getItem(STORAGE_KEY);
-  if (!sessionId) {
+  const token = localStorage.getItem(STORAGE_KEY);
+  if (!token) {
     showScreen('login');
     return;
   }
   try {
-    const status = await fetchLoginRequestStatus(sessionId);
+    const status = await fetchTokenStatus(token);
     if (status === 'approved') {
       showScreen('main');
-    } else if (status === 'awaiting_telegram_start' || status === 'pending_admin') {
+    } else if (status === 'pending_telegram' || status === 'pending_admin') {
       showScreen('waiting');
-      startPolling(sessionId);
+      applyStatus(status);
+      startPolling(token);
     } else {
       localStorage.removeItem(STORAGE_KEY);
       showScreen('login');
@@ -131,6 +155,7 @@ async function resumeExistingSession() {
 
 document.getElementById('telegram-login-btn').addEventListener('click', beginTelegramLogin);
 document.getElementById('cancel-login-btn').addEventListener('click', cancelLogin);
+document.getElementById('retry-login-btn').addEventListener('click', retryLogin);
 
 const launchBtn = document.getElementById('launch-btn');
 const status = document.getElementById('status');
