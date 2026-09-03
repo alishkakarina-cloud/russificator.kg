@@ -32,6 +32,13 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // Без этого Chromium душит setInterval, пока окно свёрнуто/в фоне —
+      // после ~5 минут в фоне таймеры схлопываются до одного тика в минуту.
+      // Экран ожидания подтверждения именно так и живёт: пользователь
+      // переключается в Telegram нажать Start, админ — в Telegram нажать
+      // "Принять", а окно всё это время висит в фоне и должно продолжать
+      // опрашивать статус каждые 2.5 сек, а не раз в минуту.
+      backgroundThrottling: false,
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
