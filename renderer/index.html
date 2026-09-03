@@ -29,7 +29,7 @@
   </main>
 
   <main class="screen" id="screen-main" hidden>
-    <button id="admin-open-btn" class="admin-icon-btn" hidden title="Админ-панель">⚙</button>
+    <button id="admin-open-btn" class="admin-open-btn">Админ панель</button>
     <h1>russificator.kg</h1>
     <p class="subtitle">Русификация автомобилей</p>
 
@@ -48,22 +48,31 @@
   </main>
 
   <main class="screen" id="screen-admin" hidden>
-    <div class="admin-header">
-      <button id="admin-back-btn" class="secondary-btn admin-back">← Назад</button>
-      <div class="admin-tabs">
-        <button id="admin-tab-history" class="admin-tab-btn active">История</button>
-        <button id="admin-tab-users" class="admin-tab-btn">Пользователи</button>
-      </div>
+    <div class="admin-shell">
+      <aside class="admin-sidebar">
+        <button id="admin-back-btn" class="admin-back-btn">← Назад</button>
+        <nav class="admin-nav">
+          <button id="admin-tab-history" class="admin-nav-btn active">История</button>
+          <div class="date-picker">
+            <button id="date-picker-btn" class="date-picker-btn">
+              <span class="date-picker-caption">Дата</span>
+              <span id="date-picker-label"></span>
+            </button>
+            <div id="admin-calendar" class="calendar-popover" hidden></div>
+          </div>
+          <button id="admin-tab-users" class="admin-nav-btn">Пользователи</button>
+        </nav>
+      </aside>
+
+      <section class="admin-content">
+        <div id="admin-history">
+          <div id="admin-sessions-list" class="sessions-table"></div>
+        </div>
+        <div id="admin-users" hidden>
+          <div id="admin-users-list" class="users-table"></div>
+        </div>
+      </section>
     </div>
-
-    <section id="admin-history">
-      <div id="admin-calendar"></div>
-      <div id="admin-sessions-list"></div>
-    </section>
-
-    <section id="admin-users" hidden>
-      <div id="admin-users-list"></div>
-    </section>
   </main>
 
   <script src="config.js"></script>

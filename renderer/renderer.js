@@ -5,7 +5,7 @@
 // работы с конкретной машиной (car_sessions) с защитой от прерывания, пока
 // сессия активна.
 
-const { SUPABASE_URL, SUPABASE_ANON_KEY, BOT_USERNAME, ADMIN_CHAT_IDS } = window.APP_CONFIG;
+const { SUPABASE_URL, SUPABASE_ANON_KEY, BOT_USERNAME } = window.APP_CONFIG;
 const POLL_INTERVAL_MS = 2500;
 const STORAGE_KEY = 'russificator_login_token';
 const SESSION_MS = 30 * 60 * 1000;
@@ -363,13 +363,9 @@ async function finishSession() {
 }
 
 async function initMainScreen() {
+  // Кнопка "Админ панель" видна всем — доступ к содержимому проверяет сервер
+  // (admin-action) по фактическим правам, независимо от того, кто её видит.
   const session = await window.sessionStore.get();
-  if (session && ADMIN_CHAT_IDS.includes(session.telegramId)) {
-    adminOpenBtn.hidden = false;
-  } else {
-    adminOpenBtn.hidden = true;
-  }
-
   activeCarSession = null;
   if (session) {
     try {
@@ -394,12 +390,41 @@ document.getElementById('retry-login-btn').addEventListener('click', retryLogin)
 let calendarViewDate = new Date();
 let selectedDate = null;
 
+function todayLocalStr() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function fmtDateLabel(dateStr) {
+  const [y, m, d] = dateStr.split('-');
+  return `${d}.${m}.${y}`;
+}
+
 async function openAdminPanel() {
   await window.app.setAdminMode(true);
   showScreen('admin');
   switchAdminTab('history');
+
+  // По умолчанию сразу сегодня — не нужно каждый раз выбирать дату вручную.
+  selectedDate = todayLocalStr();
+  calendarViewDate = new Date();
+  document.getElementById('date-picker-label').textContent = fmtDateLabel(selectedDate);
   renderCalendar();
+  loadSessionsForDate(selectedDate);
 }
+
+function toggleCalendarPopover() {
+  const popover = document.getElementById('admin-calendar');
+  popover.hidden = !popover.hidden;
+}
+
+document.addEventListener('click', (e) => {
+  const popover = document.getElementById('admin-calendar');
+  const btn = document.getElementById('date-picker-btn');
+  if (!popover.hidden && !popover.contains(e.target) && e.target !== btn) {
+    popover.hidden = true;
+  }
+});
 
 async function closeAdminPanel() {
   await window.app.setAdminMode(false);
@@ -441,8 +466,7 @@ function renderCalendar() {
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   // Локальная дата, не UTC (toISOString() сдвигал бы "сегодня" на вчера
   // ночью в часовых поясах восточнее UTC).
-  const now = new Date();
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const todayStr = todayLocalStr();
 
   let html = `<div class="calendar-header">
     <button class="calendar-nav-btn" id="cal-prev">‹</button>
@@ -478,16 +502,22 @@ function renderCalendar() {
   container.querySelectorAll('.calendar-day[data-date]').forEach((el) => {
     el.addEventListener('click', () => {
       selectedDate = el.dataset.date;
+      document.getElementById('date-picker-label').textContent = fmtDateLabel(selectedDate);
       renderCalendar();
+      document.getElementById('admin-calendar').hidden = true;
       loadSessionsForDate(selectedDate);
     });
   });
 }
 
-function fmtTime(iso) {
+function fmtDate(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+}
+
+function fmtOnlyTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
 async function loadSessionsForDate(date) {
@@ -501,17 +531,35 @@ async function loadSessionsForDate(date) {
   const endIso = new Date(y, m - 1, d + 1, 0, 0, 0, 0).toISOString();
   try {
     const { sessions } = await adminAction('list_sessions_by_date', { adminToken: session.loginToken, startIso, endIso });
+    listEl.innerHTML = '';
+    listEl.appendChild(renderSessionsHeader());
     if (!sessions.length) {
-      listEl.innerHTML = '<p class="empty-note">За этот день сессий нет.</p>';
+      const empty = document.createElement('p');
+      empty.className = 'empty-note';
+      empty.textContent = 'За этот день сессий нет.';
+      listEl.appendChild(empty);
       return;
     }
-    listEl.innerHTML = '';
     for (const s of sessions) {
       listEl.appendChild(renderSessionRow(s, session.loginToken));
     }
   } catch (err) {
     listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
   }
+}
+
+function renderSessionsHeader() {
+  const header = document.createElement('div');
+  header.className = 'session-header-row';
+  header.innerHTML = `
+    <div>Ник</div>
+    <div>Дата</div>
+    <div>Марка/модель</div>
+    <div>Старт</div>
+    <div>Финиш</div>
+    <div></div>
+  `;
+  return header;
 }
 
 function renderSessionRow(s, adminToken) {
@@ -521,8 +569,10 @@ function renderSessionRow(s, adminToken) {
   const name = s.telegram_name || (s.telegram_username ? `@${s.telegram_username}` : `id ${s.telegram_id}`);
   row.innerHTML = `
     <div class="col col-name">${name}</div>
+    <div class="col col-muted">${fmtDate(s.started_at)}</div>
     <div class="col">${s.brand} ${s.model}</div>
-    <div class="col col-times">${fmtTime(s.started_at)} → ${s.ended_at ? fmtTime(s.ended_at) : 'в процессе'}</div>
+    <div class="col col-muted">${fmtOnlyTime(s.started_at)}</div>
+    <div class="col col-muted">${s.ended_at ? fmtOnlyTime(s.ended_at) : 'в процессе'}</div>
     <div class="paid-toggle">
       <button class="paid-toggle-btn ${s.paid ? 'paid' : 'unpaid'}"></button>
       <div class="paid-options" hidden>
@@ -573,17 +623,28 @@ async function loadUsersList() {
   const session = await window.sessionStore.get();
   try {
     const { users } = await adminAction('list_users', { adminToken: session.loginToken });
+    listEl.innerHTML = '';
+    listEl.appendChild(renderUsersHeader());
     if (!users.length) {
-      listEl.innerHTML = '<p class="empty-note">Пока никто не входил.</p>';
+      const empty = document.createElement('p');
+      empty.className = 'empty-note';
+      empty.textContent = 'Пока никто не входил.';
+      listEl.appendChild(empty);
       return;
     }
-    listEl.innerHTML = '';
     for (const u of users) {
       listEl.appendChild(renderUserRow(u, session.loginToken));
     }
   } catch (err) {
     listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
   }
+}
+
+function renderUsersHeader() {
+  const header = document.createElement('div');
+  header.className = 'user-header-row';
+  header.innerHTML = `<div>Пользователь</div><div>Доверенный</div><div>Доступ</div>`;
+  return header;
 }
 
 function renderUserRow(u, adminToken) {
@@ -628,6 +689,10 @@ adminOpenBtn.addEventListener('click', openAdminPanel);
 document.getElementById('admin-back-btn').addEventListener('click', closeAdminPanel);
 document.getElementById('admin-tab-history').addEventListener('click', () => switchAdminTab('history'));
 document.getElementById('admin-tab-users').addEventListener('click', () => switchAdminTab('users'));
+document.getElementById('date-picker-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleCalendarPopover();
+});
 
 // ------------------------------------------------------------------------
 
