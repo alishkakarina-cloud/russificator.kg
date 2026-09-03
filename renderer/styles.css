@@ -108,14 +108,14 @@ h1 {
 
 /* ---- Главный экран: выбор марки/модели, активная сессия, "Завершено" ---- */
 
-#screen-main {
-  position: relative;
-}
-
+/* fixed, не absolute: #screen-main сам уже узкий (max-width: 360px) и
+   центрирован в окне, поэтому absolute-угол этого контейнера — это угол
+   узкой колонки посередине окна, а не угол самого окна. fixed считает
+   от окна целиком и не сдвигается при смене содержимого экрана. */
 .admin-open-btn {
-  position: absolute;
-  top: 14px;
-  right: 14px;
+  position: fixed;
+  top: 18px;
+  right: 18px;
   padding: 7px 12px;
   font-size: 12px;
   font-weight: 600;
@@ -124,6 +124,7 @@ h1 {
   background: #23262f;
   color: #9aa0a6;
   cursor: pointer;
+  z-index: 20;
 }
 
 .admin-open-btn:hover {
