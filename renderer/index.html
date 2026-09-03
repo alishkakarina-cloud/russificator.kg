@@ -12,7 +12,6 @@
     <h1>russificator.kg</h1>
     <p class="subtitle">Вход в систему</p>
     <button id="telegram-login-btn" class="primary-btn">Войти через Telegram</button>
-    <button id="google-login-btn" class="secondary-btn" disabled title="Скоро">Войти через Google (скоро)</button>
     <p id="login-status" class="status"></p>
   </main>
 
@@ -30,10 +29,41 @@
   </main>
 
   <main class="screen" id="screen-main" hidden>
+    <button id="admin-open-btn" class="admin-icon-btn" hidden title="Админ-панель">⚙</button>
     <h1>russificator.kg</h1>
     <p class="subtitle">Русификация автомобилей</p>
-    <button id="launch-btn" class="primary-btn">Открыть программу русификации</button>
+
+    <div id="car-picker">
+      <button id="car-dropdown-btn" class="primary-btn">Выбрать марку/модель</button>
+      <div id="car-dropdown-list" class="dropdown-list" hidden></div>
+    </div>
+
+    <div id="active-session" hidden>
+      <p class="subtitle">Открыта работа с: <strong id="active-session-label"></strong></p>
+    </div>
+
     <p id="status" class="status"></p>
+
+    <button id="finish-session-btn" class="finish-btn" hidden>Завершено</button>
+  </main>
+
+  <main class="screen" id="screen-admin" hidden>
+    <div class="admin-header">
+      <button id="admin-back-btn" class="secondary-btn admin-back">← Назад</button>
+      <div class="admin-tabs">
+        <button id="admin-tab-history" class="admin-tab-btn active">История</button>
+        <button id="admin-tab-users" class="admin-tab-btn">Пользователи</button>
+      </div>
+    </div>
+
+    <section id="admin-history">
+      <div id="admin-calendar"></div>
+      <div id="admin-sessions-list"></div>
+    </section>
+
+    <section id="admin-users" hidden>
+      <div id="admin-users-list"></div>
+    </section>
   </main>
 
   <script src="config.js"></script>

@@ -105,3 +105,369 @@ h1 {
   color: #5a606b;
   user-select: none;
 }
+
+/* ---- Главный экран: выбор марки/модели, активная сессия, "Завершено" ---- */
+
+#screen-main {
+  position: relative;
+}
+
+.admin-icon-btn {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid #343844;
+  background: #23262f;
+  color: #9aa0a6;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.admin-icon-btn:hover {
+  background: #2b2f3a;
+  color: #f2f2f2;
+}
+
+#car-picker {
+  position: relative;
+}
+
+.dropdown-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  margin-top: 8px;
+  background: #1a1c22;
+  border: 1px solid #343844;
+  border-radius: 8px;
+  overflow: hidden;
+  z-index: 5;
+  text-align: left;
+}
+
+.dropdown-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+  font-size: 14px;
+  border-bottom: 1px solid #26292f;
+}
+
+.dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.dropdown-item:hover {
+  background: #23262f;
+}
+
+.dropdown-item .price {
+  color: #9aa0a6;
+  white-space: nowrap;
+}
+
+#active-session {
+  margin-top: 8px;
+}
+
+.finish-btn {
+  position: fixed;
+  right: 16px;
+  bottom: 32px;
+  padding: 12px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f1115;
+  background: #f2c94c;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.finish-btn:hover {
+  background: #e0ba3f;
+}
+
+/* ---------------------------- Админ-панель ---------------------------- */
+
+#screen-admin {
+  max-width: none;
+  width: 100%;
+  height: 100vh;
+  padding: 20px 24px;
+  text-align: left;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#screen-admin:not([hidden]) {
+  display: flex;
+}
+
+.admin-header {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+
+.admin-back {
+  width: auto;
+  margin-top: 0;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.admin-tab-btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #9aa0a6;
+  background: transparent;
+  border: 1px solid #343844;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.admin-tab-btn.active {
+  color: #0f1115;
+  background: #4cd964;
+  border-color: #4cd964;
+}
+
+#admin-history {
+  display: flex;
+  gap: 24px;
+  flex: 1;
+  min-height: 0;
+}
+
+#admin-users {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+#admin-calendar {
+  width: 260px;
+  flex-shrink: 0;
+}
+
+.calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.calendar-nav-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid #343844;
+  background: #23262f;
+  color: #f2f2f2;
+  cursor: pointer;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.calendar-dow {
+  font-size: 11px;
+  color: #5a606b;
+  text-align: center;
+  padding: 4px 0;
+}
+
+.calendar-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  color: #f2f2f2;
+}
+
+.calendar-day:hover {
+  background: #23262f;
+}
+
+.calendar-day.empty {
+  cursor: default;
+}
+
+.calendar-day.today {
+  border-color: #4cd964;
+}
+
+.calendar-day.selected {
+  background: #4cd964;
+  color: #0f1115;
+  font-weight: 700;
+}
+
+#admin-sessions-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #23262f;
+  font-size: 13px;
+}
+
+.session-row .col {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-row .col-name {
+  flex: 1.2;
+  font-weight: 600;
+}
+
+.session-row .col-times {
+  flex: 1.4;
+  color: #9aa0a6;
+  font-size: 12px;
+}
+
+.paid-toggle {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.paid-toggle-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid #343844;
+  background: #23262f;
+  cursor: pointer;
+}
+
+.paid-toggle-btn.paid {
+  background: #4cd964;
+  border-color: #4cd964;
+}
+
+.paid-toggle-btn.unpaid {
+  background: #e05555;
+  border-color: #e05555;
+}
+
+.paid-options {
+  position: absolute;
+  right: 0;
+  top: 26px;
+  display: flex;
+  gap: 6px;
+  background: #1a1c22;
+  border: 1px solid #343844;
+  border-radius: 20px;
+  padding: 4px;
+  z-index: 5;
+}
+
+.paid-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+}
+
+.paid-dot.green {
+  background: #4cd964;
+}
+
+.paid-dot.red {
+  background: #e05555;
+}
+
+.empty-note {
+  color: #5a606b;
+  font-size: 13px;
+  padding: 12px;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #23262f;
+  font-size: 13px;
+}
+
+.user-row .col-name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.user-row .col-name .username {
+  color: #9aa0a6;
+  font-weight: 400;
+  margin-left: 6px;
+}
+
+.trusted-toggle-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid #343844;
+  background: #23262f;
+  color: #9aa0a6;
+  cursor: pointer;
+}
+
+.trusted-toggle-btn.on {
+  background: #4cd964;
+  border-color: #4cd964;
+  color: #0f1115;
+}
+
+.kick-toggle-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid #343844;
+  background: #23262f;
+  color: #9aa0a6;
+  cursor: pointer;
+}
+
+.kick-toggle-btn.blocked {
+  background: #e05555;
+  border-color: #e05555;
+  color: #fff;
+}

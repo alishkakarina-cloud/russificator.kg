@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('automaxkg', {
 contextBridge.exposeInMainWorld('app', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   getVersion: () => ipcRenderer.invoke('get-app-version'),
+  setAdminMode: (isAdmin) => ipcRenderer.invoke('set-admin-mode', isAdmin),
 });
 
 contextBridge.exposeInMainWorld('sessionStore', {

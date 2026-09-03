@@ -1,6 +1,6 @@
 {
   "name": "russificator-kg",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "russificator.kg desktop launcher",
   "main": "main.js",
   "author": "alish",
@@ -27,7 +27,7 @@
       "provider": "github",
       "owner": "alishkakarina-cloud",
       "repo": "russificator.kg",
-      "draft": false
+      "releaseType": "release"
     },
     "win": {
       "target": [

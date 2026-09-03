@@ -16,10 +16,15 @@ const sessionStore = new Store({ name: 'session', clearInvalidConfig: true });
 // Внешняя программа AUTOMAX KG. Не изменять, не переписывать — только запуск как отдельный процесс.
 const AUTOMAXKG_BAT_PATH = 'C:\\Users\\alish\\OneDrive\\Desktop\\rusifikatorkg\\@AUTOMAXKG) .bat';
 
+const MAIN_SIZE = { width: 480, height: 640 };
+const ADMIN_SIZE = { width: 860, height: 700 };
+
+let mainWindow = null;
+
 function createWindow() {
-  const win = new BrowserWindow({
-    width: 480,
-    height: 640,
+  mainWindow = new BrowserWindow({
+    width: MAIN_SIZE.width,
+    height: MAIN_SIZE.height,
     title: 'russificator.kg',
     resizable: false,
     autoHideMenuBar: true,
@@ -29,7 +34,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
 ipcMain.handle('launch-automaxkg', async () => {
@@ -70,6 +75,15 @@ ipcMain.handle('session-touch', () => {
 });
 
 ipcMain.handle('get-app-version', () => app.getVersion());
+
+ipcMain.handle('set-admin-mode', (_event, isAdmin) => {
+  if (!mainWindow) return;
+  const size = isAdmin ? ADMIN_SIZE : MAIN_SIZE;
+  mainWindow.setResizable(true);
+  mainWindow.setSize(size.width, size.height);
+  mainWindow.center();
+  mainWindow.setResizable(isAdmin);
+});
 
 app.whenReady().then(() => {
   createWindow();

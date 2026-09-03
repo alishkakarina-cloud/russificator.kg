@@ -70,21 +70,81 @@ Deno.serve(async (req) => {
   }
 
   // 1) Пользователь нажал Start по диплинку из приложения: "/start <token>"
-  //    — подтверждаем личность, но доступ пока не даём, а зовём админов.
+  //    — подтверждаем личность. Дальше три варианта: кикнут -> сразу отказ,
+  //    доверенный -> сразу approved без пинга админам, иначе -> обычная
+  //    заявка админам, как раньше.
   const message = update.message;
   if (message?.text?.startsWith('/start ')) {
     const token = message.text.slice('/start '.length).trim();
     const from = message.from;
+    const label = from.username ? `@${from.username}` : `id ${from.id}`;
+    const name = [from.first_name, from.last_name].filter(Boolean).join(' ');
+
+    // Учитываем каждого, кто хоть раз нажал Start — видно в админ-панели
+    // (список пользователей), независимо от исхода этого конкретного входа.
+    await supabase.from('telegram_users').upsert(
+      {
+        telegram_id: from.id,
+        username: from.username ?? null,
+        first_name: from.first_name,
+        last_name: from.last_name ?? null,
+        last_seen_at: new Date().toISOString(),
+      },
+      { onConflict: 'telegram_id', ignoreDuplicates: false }
+    );
+
+    const [{ data: blocked }, { data: userRow }] = await Promise.all([
+      supabase.from('blocked_telegram_users').select('telegram_id').eq('telegram_id', from.id).maybeSingle(),
+      supabase.from('telegram_users').select('trusted').eq('telegram_id', from.id).maybeSingle(),
+    ]);
+
+    const telegramUserPayload = {
+      id: from.id,
+      first_name: from.first_name,
+      last_name: from.last_name ?? null,
+      username: from.username ?? null,
+    };
+
+    if (blocked) {
+      await supabase
+        .from('telegram_login_tokens')
+        .update({ telegram_user: telegramUserPayload, confirmed_at: new Date().toISOString(), status: 'rejected' })
+        .eq('token', token)
+        .eq('status', 'pending_telegram');
+      await tg('sendMessage', { chat_id: from.id, text: 'Доступ заблокирован администратором.' });
+      return new Response(JSON.stringify({ ok: true }));
+    }
+
+    if (userRow?.trusted) {
+      const { data: row } = await supabase
+        .from('telegram_login_tokens')
+        .update({
+          telegram_user: telegramUserPayload,
+          confirmed_at: new Date().toISOString(),
+          status: 'approved',
+          decided_at: new Date().toISOString(),
+          decided_by: null,
+        })
+        .eq('token', token)
+        .eq('status', 'pending_telegram')
+        .select()
+        .maybeSingle();
+
+      if (row) {
+        await tg('sendMessage', { chat_id: from.id, text: 'Вход подтверждён автоматически (доверенный пользователь).' });
+      } else {
+        await tg('sendMessage', {
+          chat_id: from.id,
+          text: 'Ссылка для входа устарела — вернитесь в приложение и нажмите «Войти через Telegram» ещё раз.',
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    }
 
     const { data: row } = await supabase
       .from('telegram_login_tokens')
       .update({
-        telegram_user: {
-          id: from.id,
-          first_name: from.first_name,
-          last_name: from.last_name ?? null,
-          username: from.username ?? null,
-        },
+        telegram_user: telegramUserPayload,
         confirmed_at: new Date().toISOString(),
         status: 'pending_admin',
       })
@@ -98,8 +158,6 @@ Deno.serve(async (req) => {
         chat_id: from.id,
         text: 'Личность подтверждена. Заявка отправлена администратору — ожидайте решения.',
       });
-      const label = from.username ? `@${from.username}` : `id ${from.id}`;
-      const name = [from.first_name, from.last_name].filter(Boolean).join(' ');
       for (const adminId of ADMIN_CHAT_IDS) {
         await tg('sendMessage', {
           chat_id: adminId,
