@@ -46,6 +46,29 @@ Deno.serve(async (req) => {
   const update = await req.json().catch(() => null);
   if (!update) return new Response(JSON.stringify({ ok: true }));
 
+  // 0) Админ-команды /kick <telegram_id> и /unkick <telegram_id>. Пока нет
+  //    отдельной админ-панели — это единственный способ кикнуть пользователя;
+  //    приложение проверяет blocked_telegram_users при запуске и при
+  //    продлении локальной сессии.
+  const adminMessage = update.message;
+  if (adminMessage?.text && ADMIN_CHAT_IDS.includes(adminMessage.from?.id)) {
+    const kickMatch = adminMessage.text.match(/^\/(kick|unkick)\s+(\d+)/);
+    if (kickMatch) {
+      const [, cmd, idStr] = kickMatch;
+      const targetId = Number(idStr);
+      if (cmd === 'kick') {
+        await supabase
+          .from('blocked_telegram_users')
+          .upsert({ telegram_id: targetId, blocked_by: adminMessage.from.id, blocked_at: new Date().toISOString() });
+        await tg('sendMessage', { chat_id: adminMessage.chat.id, text: `Пользователь ${targetId} заблокирован.` });
+      } else {
+        await supabase.from('blocked_telegram_users').delete().eq('telegram_id', targetId);
+        await tg('sendMessage', { chat_id: adminMessage.chat.id, text: `Пользователь ${targetId} разблокирован.` });
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    }
+  }
+
   // 1) Пользователь нажал Start по диплинку из приложения: "/start <token>"
   //    — подтверждаем личность, но доступ пока не даём, а зовём админов.
   const message = update.message;

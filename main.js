@@ -1,7 +1,16 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
+const Store = require('electron-store');
 
 app.disableHardwareAcceleration();
+
+// Локальная сессия на этом устройстве: сохраняется в файле в системной
+// пользовательской папке (userData) — при копировании на другой компьютер
+// не переносится и не работает там, чего требованием и ограничивались.
+// clearInvalidConfig: если файл сессии повреждён (например, вручную
+// отредактирован или битая запись на диск) — сбрасываем его вместо падения
+// всего приложения при старте.
+const sessionStore = new Store({ name: 'session', clearInvalidConfig: true });
 
 // Внешняя программа AUTOMAX KG. Не изменять, не переписывать — только запуск как отдельный процесс.
 const AUTOMAXKG_BAT_PATH = 'C:\\Users\\alish\\OneDrive\\Desktop\\rusifikatorkg\\@AUTOMAXKG) .bat';
@@ -39,6 +48,24 @@ ipcMain.handle('open-external', async (_event, url) => {
     throw new Error('Разрешены только ссылки t.me');
   }
   await shell.openExternal(url);
+});
+
+ipcMain.handle('session-get', () => sessionStore.get('session') || null);
+
+ipcMain.handle('session-set', (_event, data) => {
+  sessionStore.set('session', data);
+});
+
+ipcMain.handle('session-clear', () => {
+  sessionStore.delete('session');
+});
+
+ipcMain.handle('session-touch', () => {
+  const session = sessionStore.get('session');
+  if (!session) return null;
+  session.lastActivityAt = Date.now();
+  sessionStore.set('session', session);
+  return session;
 });
 
 app.whenReady().then(createWindow);

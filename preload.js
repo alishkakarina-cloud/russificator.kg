@@ -7,3 +7,10 @@ contextBridge.exposeInMainWorld('automaxkg', {
 contextBridge.exposeInMainWorld('app', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 });
+
+contextBridge.exposeInMainWorld('sessionStore', {
+  get: () => ipcRenderer.invoke('session-get'),
+  set: (data) => ipcRenderer.invoke('session-set', data),
+  clear: () => ipcRenderer.invoke('session-clear'),
+  touch: () => ipcRenderer.invoke('session-touch'),
+});

@@ -24,3 +24,19 @@ create policy "anon can read token status"
   on public.telegram_login_tokens for select
   to anon
   using (true);
+
+-- Кик через бота (/kick, /unkick — см. telegram-webhook). Приложение читает
+-- эту таблицу при запуске и при продлении локальной сессии, чтобы кик
+-- срабатывал даже внутри 30-минутного окна доверия устройству.
+create table if not exists public.blocked_telegram_users (
+  telegram_id bigint primary key,
+  blocked_at timestamptz not null default now(),
+  blocked_by bigint
+);
+
+alter table public.blocked_telegram_users enable row level security;
+
+create policy "anon can read blocklist"
+  on public.blocked_telegram_users for select
+  to anon
+  using (true);
