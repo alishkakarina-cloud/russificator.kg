@@ -21,9 +21,7 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
 // @TOGUZZ11 и @Wiqqq99 — оба равноправные администраторы.
-// ВРЕМЕННО для теста сценария обычного пользователя от лица @TOGUZZ11 —
-// вернуть [7155433371, 8106761823] по завершении теста.
-const ADMIN_CHAT_IDS = [8106761823];
+const ADMIN_CHAT_IDS = [7155433371, 8106761823];
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
