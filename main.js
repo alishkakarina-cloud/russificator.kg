@@ -1,6 +1,8 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 
+app.disableHardwareAcceleration();
+
 // Внешняя программа AUTOMAX KG. Не изменять, не переписывать — только запуск как отдельный процесс.
 const AUTOMAXKG_BAT_PATH = 'C:\\Users\\alish\\OneDrive\\Desktop\\rusifikatorkg\\@AUTOMAXKG) .bat';
 
@@ -28,6 +30,15 @@ ipcMain.handle('launch-automaxkg', async () => {
     return { ok: false, error: errorMessage };
   }
   return { ok: true };
+});
+
+ipcMain.handle('open-external', async (_event, url) => {
+  // Разрешаем открывать только Telegram-ссылки (диплинк логина), чтобы renderer
+  // не мог заставить приложение открыть произвольный внешний адрес.
+  if (typeof url !== 'string' || !/^https:\/\/t\.me\//.test(url)) {
+    throw new Error('Разрешены только ссылки t.me');
+  }
+  await shell.openExternal(url);
 });
 
 app.whenReady().then(createWindow);

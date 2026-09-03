@@ -6,12 +6,29 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="screen">
+  <main class="screen" id="screen-login">
+    <h1>russificator.kg</h1>
+    <p class="subtitle">Вход в систему</p>
+    <button id="telegram-login-btn" class="primary-btn">Войти через Telegram</button>
+    <button id="google-login-btn" class="secondary-btn" disabled title="Скоро">Войти через Google (скоро)</button>
+    <p id="login-status" class="status"></p>
+  </main>
+
+  <main class="screen" id="screen-waiting" hidden>
+    <h1>russificator.kg</h1>
+    <div class="spinner"></div>
+    <p class="subtitle" id="waiting-text">Ожидание подтверждения администратора...</p>
+    <button id="cancel-login-btn" class="secondary-btn">Отменить</button>
+  </main>
+
+  <main class="screen" id="screen-main" hidden>
     <h1>russificator.kg</h1>
     <p class="subtitle">Русификация автомобилей</p>
     <button id="launch-btn" class="primary-btn">Открыть программу русификации</button>
     <p id="status" class="status"></p>
   </main>
+
+  <script src="config.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
