@@ -1,5 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
+const { execFileSync } = require('child_process');
 const Store = require('electron-store');
 const { autoUpdater } = require('electron-updater');
 
@@ -13,8 +15,94 @@ app.disableHardwareAcceleration();
 // всего приложения при старте.
 const sessionStore = new Store({ name: 'session', clearInvalidConfig: true });
 
-// Внешняя программа AUTOMAX KG. Не изменять, не переписывать — только запуск как отдельный процесс.
-const AUTOMAXKG_BAT_PATH = 'C:\\Users\\alish\\OneDrive\\Desktop\\rusifikatorkg\\@AUTOMAXKG) .bat';
+// Внешняя программа AUTOMAX KG. Не изменять, не переписывать — только запуск
+// как отдельный процесс. Исходно лежала видимо на Рабочем столе; при первом
+// запуске обновлённого приложения переносится (см. migrateAutomaxKg ниже) в
+// скрытую системную папку рядом с остальными служебными файлами (session.json
+// и т.п.), чтобы случайный/обычный пользователь не наткнулся на неё в
+// проводнике в обход входа. Это снижает шанс случайного обхода, но не
+// защищает от того, кто целенаправленно ищет скрытые файлы — папка всё ещё
+// физически на диске, просто со стандартным Windows-атрибутом "скрытый".
+const AUTOMAXKG_OLD_DIR = 'C:\\Users\\alish\\OneDrive\\Desktop\\rusifikatorkg';
+const AUTOMAXKG_OLD_BAT_PATH = path.join(AUTOMAXKG_OLD_DIR, '@AUTOMAXKG) .bat');
+const AUTOMAXKG_DIR = path.join(app.getPath('userData'), 'runtime-data');
+const AUTOMAXKG_BAT_PATH = path.join(AUTOMAXKG_DIR, '@AUTOMAXKG) .bat');
+
+function sleepSync(ms) {
+  const sab = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(sab, 0, 0, ms);
+}
+
+// Разовый перенос: срабатывает один раз на компьютере, где всё ещё стоит
+// старая видимая копия. Пробуем move (rename) — данные не теряются, просто
+// меняют путь; папка лежит в OneDrive Desktop, и его же процесс может держать
+// на ней хэндл (EBUSY), а не только классический EXDEV (разные диски) —
+// поэтому при любой ошибке rename после пары попыток откатываемся на
+// реальное копирование байтов (это обычно проходит, даже когда сам rename
+// директории не проходит) с последующим удалением исходника.
+function migrateAutomaxKg() {
+  if (fs.existsSync(AUTOMAXKG_BAT_PATH)) return; // уже перенесено раньше
+  if (!fs.existsSync(AUTOMAXKG_OLD_BAT_PATH)) return; // нечего переносить, работаем со старого пути
+
+  let renamed = false;
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3 && !renamed; attempt++) {
+    try {
+      if (attempt > 0) sleepSync(700);
+      fs.renameSync(AUTOMAXKG_OLD_DIR, AUTOMAXKG_DIR);
+      renamed = true;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  if (!renamed) {
+    try {
+      console.log('rename не прошёл (' + lastErr?.code + '), переносим копированием байтов:', AUTOMAXKG_OLD_DIR);
+      fs.cpSync(AUTOMAXKG_OLD_DIR, AUTOMAXKG_DIR, { recursive: true });
+    } catch (copyErr) {
+      console.error('Не удалось перенести AUTOMAX KG в скрытую папку — работаем со старого видимого пути', copyErr);
+      return;
+    }
+    cleanupOldAutomaxKgDir();
+  }
+
+  try {
+    execFileSync('attrib', ['+h', AUTOMAXKG_DIR]);
+  } catch (attrErr) {
+    console.error('Перенесено, но не удалось выставить атрибут "скрытый"', attrErr);
+  }
+  console.log('AUTOMAX KG перенесена в скрытую папку:', AUTOMAXKG_DIR);
+}
+
+// Удаляет старую копию после успешного копирования в новое место. Без
+// ретраев с ожиданием здесь: эта функция вызывается на каждом старте
+// приложения (на случай если OneDrive в прошлый раз мешал), а не только
+// один раз при миграции — блокирующие повторные попытки задерживали бы
+// открытие окна на каждом запуске, пока OneDrive держит папку (может быть
+// постоянно). Одна быстрая попытка: получилось — отлично, нет — просто
+// убеждаемся, что атрибут "скрытый" всё равно стоит, и не мешаем запуску.
+function cleanupOldAutomaxKgDir() {
+  if (!fs.existsSync(AUTOMAXKG_OLD_DIR)) return;
+
+  try {
+    fs.rmSync(AUTOMAXKG_OLD_DIR, { recursive: true, force: true });
+    console.log('Старая копия AUTOMAX KG удалена с Рабочего стола.');
+    return;
+  } catch (rmErr) {
+    try {
+      execFileSync('attrib', ['+h', AUTOMAXKG_OLD_DIR]);
+    } catch (attrErr) {
+      console.error('Не удалось ни удалить, ни скрыть старую копию', attrErr);
+    }
+  }
+}
+
+// Если перенос по какой-то причине не удался — приложение продолжает
+// работать со старого видимого пути, а не ломает запуск AUTOMAX KG.
+function getAutomaxKgLaunchPath() {
+  return fs.existsSync(AUTOMAXKG_BAT_PATH) ? AUTOMAXKG_BAT_PATH : AUTOMAXKG_OLD_BAT_PATH;
+}
 
 const MAIN_SIZE = { width: 480, height: 640 };
 const ADMIN_SIZE = { width: 860, height: 700 };
@@ -47,7 +135,7 @@ function createWindow() {
 ipcMain.handle('launch-automaxkg', async () => {
   // Открывает AUTOMAX KG так же, как двойной клик в проводнике: отдельное окно,
   // рабочая директория выставляется системой в папку файла сама (относительные пути внутри .bat это требуют).
-  const errorMessage = await shell.openPath(AUTOMAXKG_BAT_PATH);
+  const errorMessage = await shell.openPath(getAutomaxKgLaunchPath());
   if (errorMessage) {
     return { ok: false, error: errorMessage };
   }
@@ -93,6 +181,11 @@ ipcMain.handle('set-admin-mode', (_event, isAdmin) => {
 });
 
 app.whenReady().then(() => {
+  migrateAutomaxKg();
+  // Если сама папка уже перенесена, но старую видимую копию в прошлый раз
+  // не удалось убрать (OneDrive держал хэндл) — пробуем на каждом следующем
+  // запуске, пока не получится.
+  cleanupOldAutomaxKgDir();
   createWindow();
 
   // Обновление кода приложения (это) и обновление файлов прошивок AUTOMAX KG —
