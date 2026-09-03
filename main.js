@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
+const { autoUpdater } = require('electron-updater');
 
 app.disableHardwareAcceleration();
 
@@ -68,7 +69,22 @@ ipcMain.handle('session-touch', () => {
   return session;
 });
 
-app.whenReady().then(createWindow);
+ipcMain.handle('get-app-version', () => app.getVersion());
+
+app.whenReady().then(() => {
+  createWindow();
+
+  // Обновление кода приложения (это) и обновление файлов прошивок AUTOMAX KG —
+  // разные, никак не связанные механизмы. Здесь только про сам код.
+  // Тихая докачка + применение при следующем перезапуске — поведение
+  // electron-updater по умолчанию; checkForUpdatesAndNotify сама показывает
+  // системное уведомление, когда обновление скачано.
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.error('Проверка обновлений не удалась', err);
+    });
+  }
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

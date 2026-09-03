@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('automaxkg', {
 
 contextBridge.exposeInMainWorld('app', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  getVersion: () => ipcRenderer.invoke('get-app-version'),
 });
 
 contextBridge.exposeInMainWorld('sessionStore', {

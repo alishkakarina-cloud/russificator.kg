@@ -259,4 +259,8 @@ launchBtn.addEventListener('click', async () => {
   }
 });
 
+window.app.getVersion().then((version) => {
+  document.getElementById('app-version').textContent = `v${version}`;
+});
+
 resumeExistingSession();
