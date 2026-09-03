@@ -29,6 +29,10 @@ function isFromTelegram(req: Request): boolean {
   return req.headers.get('x-telegram-bot-api-secret-token') === TELEGRAM_WEBHOOK_SECRET;
 }
 
+async function logEvent(telegramId: number | null, eventType: string, detail?: unknown) {
+  await supabase.from('session_audit_log').insert({ session_id: null, telegram_id: telegramId, event_type: eventType, detail: detail ?? null });
+}
+
 async function tg(method: string, payload: unknown) {
   const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, {
     method: 'POST',
@@ -60,9 +64,11 @@ Deno.serve(async (req) => {
         await supabase
           .from('blocked_telegram_users')
           .upsert({ telegram_id: targetId, blocked_by: adminMessage.from.id, blocked_at: new Date().toISOString() });
+        await logEvent(targetId, 'user_kicked', { blocked_by: adminMessage.from.id, via: 'bot_command' });
         await tg('sendMessage', { chat_id: adminMessage.chat.id, text: `Пользователь ${targetId} заблокирован.` });
       } else {
         await supabase.from('blocked_telegram_users').delete().eq('telegram_id', targetId);
+        await logEvent(targetId, 'user_unkicked', { by: adminMessage.from.id, via: 'bot_command' });
         await tg('sendMessage', { chat_id: adminMessage.chat.id, text: `Пользователь ${targetId} разблокирован.` });
       }
       return new Response(JSON.stringify({ ok: true }));
@@ -92,6 +98,7 @@ Deno.serve(async (req) => {
       },
       { onConflict: 'telegram_id', ignoreDuplicates: false }
     );
+    await logEvent(from.id, 'telegram_login', { username: from.username ?? null });
 
     const [{ data: blocked }, { data: userRow }] = await Promise.all([
       supabase.from('blocked_telegram_users').select('telegram_id').eq('telegram_id', from.id).maybeSingle(),
@@ -111,6 +118,7 @@ Deno.serve(async (req) => {
         .update({ telegram_user: telegramUserPayload, confirmed_at: new Date().toISOString(), status: 'rejected' })
         .eq('token', token)
         .eq('status', 'pending_telegram');
+      await logEvent(from.id, 'login_rejected', { auto: true, reason: 'blocked' });
       await tg('sendMessage', { chat_id: from.id, text: 'Доступ заблокирован администратором.' });
       return new Response(JSON.stringify({ ok: true }));
     }
@@ -131,6 +139,7 @@ Deno.serve(async (req) => {
         .maybeSingle();
 
       if (row) {
+        await logEvent(from.id, 'login_approved', { auto: true, reason: 'trusted' });
         await tg('sendMessage', { chat_id: from.id, text: 'Вход подтверждён автоматически (доверенный пользователь).' });
       } else {
         await tg('sendMessage', {
@@ -206,6 +215,13 @@ Deno.serve(async (req) => {
       .eq('status', 'pending_admin')
       .select()
       .maybeSingle();
+
+    if (row) {
+      await logEvent(row.telegram_user?.id ?? null, action === 'approve' ? 'login_approved' : 'login_rejected', {
+        auto: false,
+        decided_by: adminId,
+      });
+    }
 
     const resultText = row
       ? (action === 'approve' ? '✅ Принято' : '⛔ Отклонено')

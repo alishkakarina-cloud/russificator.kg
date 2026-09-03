@@ -20,6 +20,10 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+async function logEvent(sessionId: string | null, telegramId: number | null, eventType: string, detail?: unknown) {
+  await supabase.from('session_audit_log').insert({ session_id: sessionId, telegram_id: telegramId, event_type: eventType, detail: detail ?? null });
+}
+
 async function resolveTelegramUser(loginToken: string) {
   const { data } = await supabase
     .from('telegram_login_tokens')
@@ -82,6 +86,7 @@ Deno.serve(async (req) => {
       .single();
 
     if (error) return json({ error: error.message }, 500);
+    await logEvent(data.id, user.id, 'session_started', { brand: body.brand, model: body.model });
     return json({ session: data });
   }
 
@@ -98,7 +103,32 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (error) return json({ error: error.message }, 500);
+    if (data) await logEvent(data.id, user.id, 'session_finished');
     return json({ session: data });
+  }
+
+  // Общее логирование того, что происходит вне Edge Functions (реальный
+  // запуск AUTOMAX KG — отдельный процесс в Electron, сама функция об этом
+  // не знает; и истечение локальной 30-минутной сессии — решение клиента).
+  // sessionId проверяется на принадлежность этому telegram_id, если указан,
+  // чтобы нельзя было залогировать событие в чужую сессию.
+  if (body.action === 'log_event') {
+    if (typeof body.eventType !== 'string') return json({ error: 'eventType обязателен' }, 400);
+
+    let sessionId: string | null = null;
+    if (body.sessionId) {
+      const { data: owned } = await supabase
+        .from('car_sessions')
+        .select('id')
+        .eq('id', body.sessionId)
+        .eq('telegram_id', user.id)
+        .maybeSingle();
+      if (!owned) return json({ error: 'Сессия не найдена' }, 404);
+      sessionId = owned.id;
+    }
+
+    await logEvent(sessionId, user.id, body.eventType, body.detail);
+    return json({ ok: true });
   }
 
   return json({ error: 'Неизвестное действие' }, 400);

@@ -198,6 +198,14 @@ async function tryLocalSession() {
   if (!session) return false;
 
   if (Date.now() - session.lastActivityAt > SESSION_MS) {
+    // loginToken остаётся approved на сервере навсегда — 30 минут это только
+    // локальное доверие устройству, поэтому залогировать событие всё ещё
+    // можно тем же токеном.
+    await carSession('log_event', {
+      loginToken: session.loginToken,
+      eventType: 'session_expired',
+      detail: { lastActivityAt: session.lastActivityAt },
+    }).catch((e) => console.error('Не удалось залогировать истечение сессии', e));
     await window.sessionStore.clear();
     return false;
   }
@@ -317,8 +325,23 @@ async function selectCarModel(model) {
       model: model.model,
     });
     activeCarSession = carSess;
-    await window.automaxkg.launch();
-    status.textContent = '';
+    const launchResult = await window.automaxkg.launch();
+    if (launchResult && launchResult.ok === false) {
+      await carSession('log_event', {
+        loginToken: session.loginToken,
+        sessionId: carSess.id,
+        eventType: 'automaxkg_launch_error',
+        detail: { error: launchResult.error },
+      }).catch((e) => console.error('Не удалось залогировать ошибку запуска', e));
+      status.textContent = 'Не удалось запустить AUTOMAX KG: ' + launchResult.error;
+    } else {
+      await carSession('log_event', {
+        loginToken: session.loginToken,
+        sessionId: carSess.id,
+        eventType: 'automaxkg_launched',
+      }).catch((e) => console.error('Не удалось залогировать запуск', e));
+      status.textContent = '';
+    }
     renderActiveSession();
   } catch (err) {
     if (err.status === 409 && err.data && err.data.session) {
@@ -564,9 +587,13 @@ function renderSessionsHeader() {
 
 function renderSessionRow(s, adminToken) {
   const row = document.createElement('div');
-  row.className = 'session-row';
+  row.className = 'session-row session-row-clickable';
+  row.title = 'Открыть подробный лог этой сессии';
 
-  const name = s.telegram_name || (s.telegram_username ? `@${s.telegram_username}` : `id ${s.telegram_id}`);
+  // username приоритетнее имени: имя в Telegram может быть чем угодно
+  // (например один символ), а username — куда более надёжный и узнаваемый
+  // идентификатор для бизнеса.
+  const name = s.telegram_username ? `@${s.telegram_username}` : (s.telegram_name || `id ${s.telegram_id}`);
   row.innerHTML = `
     <div class="col col-name">${name}</div>
     <div class="col col-muted">${fmtDate(s.started_at)}</div>
@@ -574,10 +601,13 @@ function renderSessionRow(s, adminToken) {
     <div class="col col-muted">${fmtOnlyTime(s.started_at)}</div>
     <div class="col col-muted">${s.ended_at ? fmtOnlyTime(s.ended_at) : 'в процессе'}</div>
     <div class="paid-toggle">
-      <button class="paid-toggle-btn ${s.paid ? 'paid' : 'unpaid'}"></button>
+      <button class="paid-toggle-btn ${s.paid ? 'paid' : 'unpaid'}">
+        <span class="paid-dot-icon"></span>
+        <span class="paid-label">${s.paid ? 'Оплачено' : 'Не оплачено'}</span>
+      </button>
       <div class="paid-options" hidden>
-        <button class="paid-dot green" title="Оплачено"></button>
-        <button class="paid-dot red" title="Не оплачено"></button>
+        <button class="paid-choice green" title="Оплачено"><span class="paid-dot-icon"></span>Оплачено</button>
+        <button class="paid-choice red" title="Не оплачено"><span class="paid-dot-icon"></span>Не оплачено</button>
       </div>
     </div>
   `;
@@ -590,22 +620,89 @@ function renderSessionRow(s, adminToken) {
     options.hidden = !options.hidden;
   });
 
-  row.querySelector('.paid-dot.green').addEventListener('click', async (e) => {
+  row.querySelector('.paid-choice.green').addEventListener('click', async (e) => {
     e.stopPropagation();
     await setPaid(s.id, true, adminToken, toggleBtn, options);
   });
-  row.querySelector('.paid-dot.red').addEventListener('click', async (e) => {
+  row.querySelector('.paid-choice.red').addEventListener('click', async (e) => {
     e.stopPropagation();
     await setPaid(s.id, false, adminToken, toggleBtn, options);
   });
 
+  row.addEventListener('click', () => openSessionDetail(s, name, adminToken));
+
   return row;
 }
+
+const EVENT_LABELS = {
+  telegram_login: 'Вход через Telegram',
+  login_approved: 'Вход одобрен',
+  login_rejected: 'Вход отклонён',
+  user_kicked: 'Пользователь кикнут',
+  user_unkicked: 'Доступ восстановлен',
+  session_started: 'Выбрана марка/модель, сессия начата',
+  automaxkg_launched: 'AUTOMAX KG запущен',
+  automaxkg_launch_error: 'Ошибка запуска AUTOMAX KG',
+  session_finished: 'Нажато «Завершено»',
+  session_expired: 'Локальная сессия истекла (30 минут)',
+};
+
+function fmtEventDetail(ev) {
+  const d = ev.detail;
+  if (!d) return '';
+  if (ev.event_type === 'session_started') return `${d.brand ?? ''} ${d.model ?? ''}`.trim();
+  if (ev.event_type === 'automaxkg_launch_error') return d.error ?? '';
+  if (ev.event_type === 'login_approved' || ev.event_type === 'login_rejected') {
+    return d.auto ? `авто (${d.reason})` : `решение админа ${d.decided_by ?? ''}`;
+  }
+  if (ev.event_type === 'user_kicked') return `админ ${d.blocked_by ?? ''}`;
+  return '';
+}
+
+async function openSessionDetail(s, name, adminToken) {
+  const overlay = document.getElementById('session-detail-overlay');
+  const title = document.getElementById('session-detail-title');
+  const list = document.getElementById('session-detail-events');
+  title.textContent = `${name} — ${s.brand} ${s.model}`;
+  list.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  overlay.hidden = false;
+
+  try {
+    const { events } = await adminAction('list_session_events', { adminToken, sessionId: s.id });
+    if (!events.length) {
+      list.innerHTML = '<p class="empty-note">Событий не зафиксировано.</p>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const ev of events) {
+      const row = document.createElement('div');
+      row.className = 'event-row';
+      const label = EVENT_LABELS[ev.event_type] || ev.event_type;
+      const detailText = fmtEventDetail(ev);
+      row.innerHTML = `
+        <div class="event-time">${fmtDate(ev.created_at)} ${fmtOnlyTime(ev.created_at)}</div>
+        <div class="event-label">${label}</div>
+        <div class="event-detail">${detailText}</div>
+      `;
+      list.appendChild(row);
+    }
+  } catch (err) {
+    list.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+  }
+}
+
+document.getElementById('session-detail-close').addEventListener('click', () => {
+  document.getElementById('session-detail-overlay').hidden = true;
+});
+document.getElementById('session-detail-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'session-detail-overlay') e.target.hidden = true;
+});
 
 async function setPaid(sessionId, paid, adminToken, toggleBtn, options) {
   try {
     await adminAction('set_paid', { adminToken, sessionId, paid });
     toggleBtn.classList.toggle('paid', paid);
+    toggleBtn.querySelector('.paid-label').textContent = paid ? 'Оплачено' : 'Не оплачено';
     toggleBtn.classList.toggle('unpaid', !paid);
     options.hidden = true;
   } catch (err) {

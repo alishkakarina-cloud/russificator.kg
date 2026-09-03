@@ -103,3 +103,22 @@ create table if not exists public.car_sessions (
 );
 
 alter table public.car_sessions enable row level security;
+
+-- Полный аудит-лог: вход/одобрение/отклонение/кик (session_id пуст — эти
+-- события ещё не привязаны ни к какой машине), выбор марки/модели, запуск
+-- AUTOMAX KG (или ошибка запуска), "Завершено", истечение локальной сессии.
+-- on delete set null — при (гипотетическом) удалении car_sessions лог не
+-- пропадает, просто теряет привязку к конкретной сессии.
+-- Пишут только Edge Functions (service_role) — никаких anon-политик.
+create table if not exists public.session_audit_log (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid references public.car_sessions(id) on delete set null,
+  telegram_id bigint,
+  event_type text not null,
+  detail jsonb,
+  created_at timestamptz not null default now()
+);
+
+alter table public.session_audit_log enable row level security;
+
+create index if not exists session_audit_log_session_id_idx on public.session_audit_log (session_id);

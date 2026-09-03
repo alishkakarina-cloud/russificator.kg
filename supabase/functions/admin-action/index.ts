@@ -23,6 +23,10 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+async function logEvent(sessionId: string | null, telegramId: number | null, eventType: string, detail?: unknown) {
+  await supabase.from('session_audit_log').insert({ session_id: sessionId, telegram_id: telegramId, event_type: eventType, detail: detail ?? null });
+}
+
 async function requireAdmin(adminToken: string): Promise<number | null> {
   const { data } = await supabase
     .from('telegram_login_tokens')
@@ -74,6 +78,16 @@ Deno.serve(async (req) => {
         .from('blocked_telegram_users')
         .upsert({ telegram_id: body.targetTelegramId, blocked_by: adminId, blocked_at: new Date().toISOString() });
       if (error) return json({ error: error.message }, 500);
+
+      // Если у кикнутого прямо сейчас открыта работа с машиной — привязываем
+      // событие к этой сессии тоже, чтобы это было видно в её детальном логе.
+      const { data: active } = await supabase
+        .from('car_sessions')
+        .select('id')
+        .eq('telegram_id', body.targetTelegramId)
+        .is('ended_at', null)
+        .maybeSingle();
+      await logEvent(active?.id ?? null, body.targetTelegramId, 'user_kicked', { blocked_by: adminId, via: 'admin_panel' });
       return json({ ok: true });
     }
 
@@ -81,6 +95,7 @@ Deno.serve(async (req) => {
       if (typeof body.targetTelegramId !== 'number') return json({ error: 'targetTelegramId обязателен' }, 400);
       const { error } = await supabase.from('blocked_telegram_users').delete().eq('telegram_id', body.targetTelegramId);
       if (error) return json({ error: error.message }, 500);
+      await logEvent(null, body.targetTelegramId, 'user_unkicked', { by: adminId, via: 'admin_panel' });
       return json({ ok: true });
     }
 
@@ -100,6 +115,17 @@ Deno.serve(async (req) => {
         .order('started_at', { ascending: false });
       if (error) return json({ error: error.message }, 500);
       return json({ sessions: data ?? [] });
+    }
+
+    case 'list_session_events': {
+      if (typeof body.sessionId !== 'string') return json({ error: 'sessionId обязателен' }, 400);
+      const { data, error } = await supabase
+        .from('session_audit_log')
+        .select('*')
+        .eq('session_id', body.sessionId)
+        .order('created_at', { ascending: true });
+      if (error) return json({ error: error.message }, 500);
+      return json({ events: data ?? [] });
     }
 
     case 'set_paid': {
