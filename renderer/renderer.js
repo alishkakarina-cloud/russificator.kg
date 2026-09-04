@@ -1,14 +1,14 @@
 // Паттерн вход-через-Telegram (токен + вебхук + поллинг) взят из проекта
 // Trecker и адаптирован под Electron (shell.openExternal вместо window.open).
 // Поверх — админ-подтверждение (или авто-approve для доверенных / авто-reject
-// для кикнутых), локальная 30-минутная сессия устройства, и учёт сессий
+// для кикнутых), локальная 10-минутная сессия устройства, и учёт сессий
 // работы с конкретной машиной (car_sessions) с защитой от прерывания, пока
 // сессия активна.
 
 const { SUPABASE_URL, SUPABASE_ANON_KEY, BOT_USERNAME } = window.APP_CONFIG;
 const POLL_INTERVAL_MS = 2500;
 const STORAGE_KEY = 'russificator_login_token';
-const SESSION_MS = 30 * 60 * 1000;
+const SESSION_MS = 10 * 60 * 1000;
 
 const screens = {
   login: document.getElementById('screen-login'),
@@ -251,7 +251,7 @@ async function tryLocalSession() {
   if (!session) return false;
 
   if (Date.now() - session.lastActivityAt > SESSION_MS) {
-    // loginToken остаётся approved на сервере навсегда — 30 минут это только
+    // loginToken остаётся approved на сервере навсегда — 10 минут это только
     // локальное доверие устройству, поэтому залогировать событие всё ещё
     // можно тем же токеном.
     await carSession('log_event', {
@@ -280,7 +280,7 @@ async function tryLocalSession() {
   return true;
 }
 
-// Продлевает 30-минутное окно и перепроверяет кик — но только если сейчас
+// Продлевает 10-минутное окно и перепроверяет кик — но только если сейчас
 // нет активной сессии работы с машиной. Пока activeCarSession не пуст, кик и
 // истечение откладываются до нажатия "Завершено" (см. ограничения задачи).
 async function touchSessionOrKick() {
@@ -522,8 +522,26 @@ async function initMainScreen() {
   activeCarSession = null;
   if (session) {
     try {
-      const { session: active } = await carSession('get_active', { loginToken: session.loginToken });
-      activeCarSession = active;
+      const { session: stale } = await carSession('get_active', { loginToken: session.loginToken });
+      // initMainScreen вызывается только при входе/резюме или после закрытия
+      // админ-панели — то есть никогда в момент, когда встроенный терминал
+      // реально открыт в этом же запуске приложения (выбор марки сразу
+      // переключает на screen-terminal, а не сюда). Значит любая найденная
+      // здесь незавершённая car_session — гарантированно "хвост" от
+      // предыдущего запуска (например окно закрыли, не нажав "Завершено"),
+      // а не то, что пользователь выбрал сейчас. Раньше это ошибочно
+      // показывалось как "уже идёт работа с X Y", из-за чего экран выбора
+      // марки пропускался — выглядело как автовыбор марки при входе.
+      // Экран выбора должен показываться всегда — тихо закрываем такой хвост
+      // сами, не заставляя пользователя вручную жать "Завершено" за сессию,
+      // которую он мог даже не видеть.
+      if (stale) {
+        await carSession('finish', {
+          loginToken: session.loginToken,
+          sessionId: stale.id,
+          detail: { auto: true, reason: 'stale_on_resume' },
+        }).catch((e) => console.error('Не удалось автоматически закрыть зависшую сессию', e));
+      }
     } catch (err) {
       console.error('Не удалось проверить активную сессию', err);
     }
@@ -775,7 +793,7 @@ const EVENT_LABELS = {
   automaxkg_launched: 'AUTOMAX KG запущен',
   automaxkg_launch_error: 'Ошибка запуска AUTOMAX KG',
   session_finished: 'Нажато «Завершено»',
-  session_expired: 'Локальная сессия истекла (30 минут)',
+  session_expired: 'Локальная сессия истекла (10 минут)',
 };
 
 function fmtEventDetail(ev) {
@@ -808,7 +826,10 @@ async function openSessionDetail(s, name, adminToken) {
     for (const ev of events) {
       const row = document.createElement('div');
       row.className = 'event-row';
-      const label = EVENT_LABELS[ev.event_type] || ev.event_type;
+      const label =
+        ev.event_type === 'session_finished' && ev.detail?.auto
+          ? 'Закрыта автоматически (осталась незавершённой)'
+          : EVENT_LABELS[ev.event_type] || ev.event_type;
       const detailText = fmtEventDetail(ev);
       row.innerHTML = `
         <div class="event-time">${fmtDate(ev.created_at)} ${fmtOnlyTime(ev.created_at)}</div>

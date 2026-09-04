@@ -27,7 +27,7 @@ create policy "anon can read token status"
 
 -- Кик через бота (/kick, /unkick — см. telegram-webhook). Приложение читает
 -- эту таблицу при запуске и при продлении локальной сессии, чтобы кик
--- срабатывал даже внутри 30-минутного окна доверия устройству.
+-- срабатывал даже внутри 10-минутного окна доверия устройству.
 create table if not exists public.blocked_telegram_users (
   telegram_id bigint primary key,
   blocked_at timestamptz not null default now(),

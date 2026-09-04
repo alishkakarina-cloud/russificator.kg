@@ -103,13 +103,13 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (error) return json({ error: error.message }, 500);
-    if (data) await logEvent(data.id, user.id, 'session_finished');
+    if (data) await logEvent(data.id, user.id, 'session_finished', body.detail ?? null);
     return json({ session: data });
   }
 
   // Общее логирование того, что происходит вне Edge Functions (реальный
   // запуск AUTOMAX KG — отдельный процесс в Electron, сама функция об этом
-  // не знает; и истечение локальной 30-минутной сессии — решение клиента).
+  // не знает; и истечение локальной 10-минутной сессии — решение клиента).
   // sessionId проверяется на принадлежность этому telegram_id, если указан,
   // чтобы нельзя было залогировать событие в чужую сессию.
   if (body.action === 'log_event') {
