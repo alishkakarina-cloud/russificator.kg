@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
 const { execFileSync } = require('child_process');
 const Store = require('electron-store');
 const { autoUpdater } = require('electron-updater');
@@ -16,92 +17,114 @@ app.disableHardwareAcceleration();
 const sessionStore = new Store({ name: 'session', clearInvalidConfig: true });
 
 // Внешняя программа AUTOMAX KG. Не изменять, не переписывать — только запуск
-// как отдельный процесс. Исходно лежала видимо на Рабочем столе; при первом
-// запуске обновлённого приложения переносится (см. migrateAutomaxKg ниже) в
-// скрытую системную папку рядом с остальными служебными файлами (session.json
-// и т.п.), чтобы случайный/обычный пользователь не наткнулся на неё в
-// проводнике в обход входа. Это снижает шанс случайного обхода, но не
-// защищает от того, кто целенаправленно ищет скрытые файлы — папка всё ещё
-// физически на диске, просто со стандартным Windows-атрибутом "скрытый".
-const AUTOMAXKG_OLD_DIR = 'C:\\Users\\alish\\OneDrive\\Desktop\\rusifikatorkg';
-const AUTOMAXKG_OLD_BAT_PATH = path.join(AUTOMAXKG_OLD_DIR, '@AUTOMAXKG) .bat');
+// как отдельный процесс. Файлы не входят в публичный установщик (они —
+// приватная бизнес-прошивка) и не привязаны ни к какому конкретному
+// компьютеру или пользователю Windows: путь всегда вычисляется от
+// app.getPath('userData'), который на любой машине указывает в правильное
+// место сам по себе. Если файлов там ещё нет (первый запуск на новом
+// компьютере) — они скачиваются с приватного хранилища после входа, см.
+// automaxkg-status/automaxkg-download ниже.
 const AUTOMAXKG_DIR = path.join(app.getPath('userData'), 'runtime-data');
 const AUTOMAXKG_BAT_PATH = path.join(AUTOMAXKG_DIR, '@AUTOMAXKG) .bat');
 
-function sleepSync(ms) {
-  const sab = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(sab, 0, 0, ms);
-}
-
-// Разовый перенос: срабатывает один раз на компьютере, где всё ещё стоит
-// старая видимая копия. Пробуем move (rename) — данные не теряются, просто
-// меняют путь; папка лежит в OneDrive Desktop, и его же процесс может держать
-// на ней хэндл (EBUSY), а не только классический EXDEV (разные диски) —
-// поэтому при любой ошибке rename после пары попыток откатываемся на
-// реальное копирование байтов (это обычно проходит, даже когда сам rename
-// директории не проходит) с последующим удалением исходника.
-function migrateAutomaxKg() {
-  if (fs.existsSync(AUTOMAXKG_BAT_PATH)) return; // уже перенесено раньше
-  if (!fs.existsSync(AUTOMAXKG_OLD_BAT_PATH)) return; // нечего переносить, работаем со старого пути
-
-  let renamed = false;
-  let lastErr = null;
-  for (let attempt = 0; attempt < 3 && !renamed; attempt++) {
-    try {
-      if (attempt > 0) sleepSync(700);
-      fs.renameSync(AUTOMAXKG_OLD_DIR, AUTOMAXKG_DIR);
-      renamed = true;
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-
-  if (!renamed) {
-    try {
-      console.log('rename не прошёл (' + lastErr?.code + '), переносим копированием байтов:', AUTOMAXKG_OLD_DIR);
-      fs.cpSync(AUTOMAXKG_OLD_DIR, AUTOMAXKG_DIR, { recursive: true });
-    } catch (copyErr) {
-      console.error('Не удалось перенести AUTOMAX KG в скрытую папку — работаем со старого видимого пути', copyErr);
-      return;
-    }
-    cleanupOldAutomaxKgDir();
-  }
-
-  try {
-    execFileSync('attrib', ['+h', AUTOMAXKG_DIR]);
-  } catch (attrErr) {
-    console.error('Перенесено, но не удалось выставить атрибут "скрытый"', attrErr);
-  }
-  console.log('AUTOMAX KG перенесена в скрытую папку:', AUTOMAXKG_DIR);
-}
-
-// Удаляет старую копию после успешного копирования в новое место. Без
-// ретраев с ожиданием здесь: эта функция вызывается на каждом старте
-// приложения (на случай если OneDrive в прошлый раз мешал), а не только
-// один раз при миграции — блокирующие повторные попытки задерживали бы
-// открытие окна на каждом запуске, пока OneDrive держит папку (может быть
-// постоянно). Одна быстрая попытка: получилось — отлично, нет — просто
-// убеждаемся, что атрибут "скрытый" всё равно стоит, и не мешаем запуску.
-function cleanupOldAutomaxKgDir() {
-  if (!fs.existsSync(AUTOMAXKG_OLD_DIR)) return;
-
-  try {
-    fs.rmSync(AUTOMAXKG_OLD_DIR, { recursive: true, force: true });
-    console.log('Старая копия AUTOMAX KG удалена с Рабочего стола.');
-    return;
-  } catch (rmErr) {
-    try {
-      execFileSync('attrib', ['+h', AUTOMAXKG_OLD_DIR]);
-    } catch (attrErr) {
-      console.error('Не удалось ни удалить, ни скрыть старую копию', attrErr);
-    }
-  }
-}
-
-// Если перенос по какой-то причине не удался — приложение продолжает
-// работать со старого видимого пути, а не ломает запуск AUTOMAX KG.
 function getAutomaxKgLaunchPath() {
-  return fs.existsSync(AUTOMAXKG_BAT_PATH) ? AUTOMAXKG_BAT_PATH : AUTOMAXKG_OLD_BAT_PATH;
+  return AUTOMAXKG_BAT_PATH;
+}
+
+function isAutomaxKgPresent() {
+  return fs.existsSync(AUTOMAXKG_BAT_PATH);
+}
+
+// Скачивает один файл по прямой (подписанной) ссылке в destPath, следуя
+// редиректам вручную — Supabase Storage сам по себе не редиректит, но код
+// написан на случай, если ссылка когда-то будет проксироваться через CDN.
+function downloadToFile(url, destPath) {
+  return new Promise((resolve, reject) => {
+    const doGet = (u) => {
+      const req = https.get(u, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          doGet(res.headers.location);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`HTTP ${res.statusCode} для ${u}`));
+          return;
+        }
+
+        const file = fs.createWriteStream(destPath);
+        // Обрыв соединения посреди передачи выдаёт 'error' на самом потоке
+        // ответа (res), не только на запросе — без этого слушателя такая
+        // ошибка ушла бы необработанной и могла уронить весь процесс main.js.
+        let settled = false;
+        const fail = (err) => {
+          if (settled) return;
+          settled = true;
+          file.destroy();
+          fs.rm(destPath, { force: true }, () => {});
+          reject(err);
+        };
+        res.on('error', fail);
+        file.on('error', fail);
+        res.pipe(file);
+        file.on('finish', () => {
+          if (settled) return;
+          settled = true;
+          file.close(() => resolve());
+        });
+      });
+      req.on('error', reject);
+    };
+    doGet(url);
+  });
+}
+
+// Части больших файлов (>50МБ) были загружены в хранилище раздельно как
+// <путь>.part000, <путь>.part001, ... (см. upload_large_files.js в истории
+// разработки) из-за ограничения бесплатного плана Supabase Storage в 50МБ на
+// объект. После скачивания всех частей на диск клиента их нужно склеить
+// обратно в один файл в исходном порядке и удалить сами части.
+function reassembleParts(dir) {
+  const partRe = /\.part(\d{3})$/;
+  const groups = {};
+
+  function walk(d) {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else {
+        const m = entry.name.match(partRe);
+        if (m) {
+          const base = full.slice(0, -m[0].length);
+          (groups[base] = groups[base] || []).push({ full, idx: Number(m[1]) });
+        }
+      }
+    }
+  }
+  walk(dir);
+
+  for (const base of Object.keys(groups)) {
+    const parts = groups[base].sort((a, b) => a.idx - b.idx);
+    // Если какая-то часть не докачалась (обрыв сети), индексы будут не
+    // подряд — проверяем ДО удаления/склейки, чтобы не оставить на диске
+    // молча повреждённый (укороченный) файл вместо явной ошибки.
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].idx !== i) {
+        throw new Error(
+          `отсутствует часть ${path.basename(base)}.part${String(i).padStart(3, '0')} — скачивание неполное`
+        );
+      }
+    }
+    if (fs.existsSync(base)) fs.rmSync(base);
+    for (const p of parts) {
+      fs.appendFileSync(base, fs.readFileSync(p.full));
+    }
+    for (const p of parts) {
+      fs.rmSync(p.full);
+    }
+  }
 }
 
 const MAIN_SIZE = { width: 480, height: 640 };
@@ -139,6 +162,68 @@ ipcMain.handle('launch-automaxkg', async () => {
   if (errorMessage) {
     return { ok: false, error: errorMessage };
   }
+  return { ok: true };
+});
+
+ipcMain.handle('automaxkg-status', () => ({ available: isAutomaxKgPresent() }));
+
+// Скачивает файлы AUTOMAX KG с приватного хранилища в скрытую системную
+// папку. Список файлов (с короткоживущими подписанными ссылками) renderer
+// получает заранее от Edge Function automaxkg-manifest, которая сама
+// проверяет, что пользователь вошёл и одобрен — здесь мы просто скачиваем
+// то, что было выдано, без повторной проверки прав (это не точка входа
+// для произвольных URL с фронтенда, ссылки всегда только от нашей функции).
+ipcMain.handle('automaxkg-download', async (event, { files }) => {
+  fs.mkdirSync(AUTOMAXKG_DIR, { recursive: true });
+  const total = files.length;
+  let done = 0;
+
+  for (const f of files) {
+    const destPath = path.join(AUTOMAXKG_DIR, ...f.path.split('/'));
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+
+    let lastErr = null;
+    let ok = false;
+    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+      try {
+        await downloadToFile(f.url, destPath);
+        // Проверка целостности: без неё оборванная на середине закачка
+        // молча остаётся на диске как будто всё хорошо, и позже AUTOMAX KG
+        // может получить битый/укороченный файл, не зная об этом.
+        if (typeof f.size === 'number' && f.size > 0) {
+          const actualSize = fs.statSync(destPath).size;
+          if (actualSize !== f.size) {
+            throw new Error(`размер не совпадает (получено ${actualSize}, ожидалось ${f.size})`);
+          }
+        }
+        ok = true;
+      } catch (err) {
+        lastErr = err;
+        try {
+          fs.rmSync(destPath, { force: true });
+        } catch {}
+      }
+    }
+    if (!ok) {
+      return { ok: false, error: `Не удалось скачать ${f.path}: ${lastErr?.message || lastErr}` };
+    }
+
+    done++;
+    event.sender.send('automaxkg-download-progress', { done, total });
+  }
+
+  try {
+    reassembleParts(AUTOMAXKG_DIR);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+
+  try {
+    execFileSync('attrib', ['+h', AUTOMAXKG_DIR]);
+  } catch (attrErr) {
+    console.error('Скачано, но не удалось выставить атрибут "скрытый"', attrErr);
+  }
+
   return { ok: true };
 });
 
@@ -181,11 +266,6 @@ ipcMain.handle('set-admin-mode', (_event, isAdmin) => {
 });
 
 app.whenReady().then(() => {
-  migrateAutomaxKg();
-  // Если сама папка уже перенесена, но старую видимую копию в прошлый раз
-  // не удалось убрать (OneDrive держал хэндл) — пробуем на каждом следующем
-  // запуске, пока не получится.
-  cleanupOldAutomaxKgDir();
   createWindow();
 
   // Обновление кода приложения (это) и обновление файлов прошивок AUTOMAX KG —

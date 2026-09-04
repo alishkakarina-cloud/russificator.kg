@@ -14,6 +14,7 @@ const screens = {
   login: document.getElementById('screen-login'),
   waiting: document.getElementById('screen-waiting'),
   rejected: document.getElementById('screen-rejected'),
+  downloading: document.getElementById('screen-downloading'),
   main: document.getElementById('screen-main'),
   admin: document.getElementById('screen-admin'),
 };
@@ -110,6 +111,56 @@ function stopPolling() {
 
 // ------------------------------- Локальная сессия -------------------------------
 
+const downloadProgressFill = document.getElementById('download-progress-fill');
+const downloadProgressText = document.getElementById('download-progress-text');
+const downloadErrorEl = document.getElementById('download-error');
+const downloadRetryBtn = document.getElementById('download-retry-btn');
+let pendingLoginToken = null;
+
+window.automaxkg.onDownloadProgress(({ done, total }) => {
+  if (!total) return;
+  const pct = Math.round((done / total) * 100);
+  downloadProgressFill.style.width = pct + '%';
+  downloadProgressText.textContent = `Скачано ${done} из ${total} файлов (${pct}%)`;
+});
+
+// Перед первым показом главного экрана проверяет, есть ли уже AUTOMAX KG на
+// этом компьютере (в userData/runtime-data). На новой машине их там нет —
+// список файлов с приватного хранилища и подписанные ссылки на скачивание
+// выдаёт automaxkg-manifest, доступ к которой есть только у вошедшего и
+// одобренного пользователя (проверяется на сервере по loginToken).
+async function ensureAutomaxKgReady(loginToken) {
+  const { available } = await window.automaxkg.status();
+  if (available) return true;
+
+  pendingLoginToken = loginToken;
+  showScreen('downloading');
+  downloadErrorEl.hidden = true;
+  downloadRetryBtn.hidden = true;
+  downloadProgressFill.style.width = '0%';
+  downloadProgressText.textContent = 'Подготовка списка файлов...';
+
+  try {
+    const { files } = await callFunction('automaxkg-manifest', { loginToken });
+    downloadProgressText.textContent = `Скачано 0 из ${files.length} файлов (0%)`;
+    const result = await window.automaxkg.download(files);
+    if (!result.ok) throw new Error(result.error);
+    return true;
+  } catch (err) {
+    downloadErrorEl.hidden = false;
+    downloadErrorEl.textContent = 'Ошибка скачивания: ' + err.message;
+    downloadRetryBtn.hidden = false;
+    return false;
+  }
+}
+
+downloadRetryBtn.addEventListener('click', async () => {
+  if (await ensureAutomaxKgReady(pendingLoginToken)) {
+    showScreen('main');
+    await initMainScreen();
+  }
+});
+
 async function enterMainScreen(telegramId, loginToken) {
   if (telegramId) {
     try {
@@ -124,6 +175,7 @@ async function enterMainScreen(telegramId, loginToken) {
       console.error('Не удалось сохранить локальную сессию', err);
     }
   }
+  if (!(await ensureAutomaxKgReady(loginToken))) return;
   showScreen('main');
   await initMainScreen();
 }
@@ -220,8 +272,10 @@ async function tryLocalSession() {
   }
 
   await window.sessionStore.touch();
-  showScreen('main');
-  await initMainScreen();
+  if (await ensureAutomaxKgReady(session.loginToken)) {
+    showScreen('main');
+    await initMainScreen();
+  }
   return true;
 }
 

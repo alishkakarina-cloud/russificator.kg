@@ -28,6 +28,16 @@
     <button id="retry-login-btn" class="secondary-btn">Попробовать снова</button>
   </main>
 
+  <main class="screen" id="screen-downloading" hidden>
+    <h1>russificator.kg</h1>
+    <div class="spinner"></div>
+    <p class="subtitle">Первая настройка на этом компьютере — скачивание AUTOMAX KG...</p>
+    <div class="progress-bar"><div id="download-progress-fill" class="progress-bar-fill"></div></div>
+    <p class="status" id="download-progress-text">Подготовка...</p>
+    <p class="status" id="download-error" hidden></p>
+    <button id="download-retry-btn" class="secondary-btn" hidden>Повторить</button>
+  </main>
+
   <main class="screen" id="screen-main" hidden>
     <button id="admin-open-btn" class="admin-open-btn">Админ панель</button>
     <h1>russificator.kg</h1>

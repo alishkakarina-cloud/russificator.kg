@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('automaxkg', {
   launch: () => ipcRenderer.invoke('launch-automaxkg'),
+  status: () => ipcRenderer.invoke('automaxkg-status'),
+  download: (files) => ipcRenderer.invoke('automaxkg-download', { files }),
+  onDownloadProgress: (callback) => {
+    ipcRenderer.on('automaxkg-download-progress', (_event, data) => callback(data));
+  },
 });
 
 contextBridge.exposeInMainWorld('app', {
