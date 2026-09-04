@@ -250,7 +250,19 @@ async function tryLocalSession() {
   }
   if (!session) return false;
 
-  if (Date.now() - session.lastActivityAt > SESSION_MS) {
+  // Доверенным пользователям (админ-панель -> Пользователи -> "Доверенный")
+  // 10-минутный таймер не применяется — постоянный доступ без повторного
+  // входа. Кик по-прежнему действует на них так же, как на всех — trusted
+  // отключает только этот один конкретный путь разлогина, не оба.
+  let trusted = false;
+  try {
+    const result = await carSession('get_trusted', { loginToken: session.loginToken });
+    trusted = Boolean(result.trusted);
+  } catch (err) {
+    console.error('Проверка доверенного статуса не удалась, действуем как для обычного пользователя', err);
+  }
+
+  if (!trusted && Date.now() - session.lastActivityAt > SESSION_MS) {
     // loginToken остаётся approved на сервере навсегда — 10 минут это только
     // локальное доверие устройству, поэтому залогировать событие всё ещё
     // можно тем же токеном.

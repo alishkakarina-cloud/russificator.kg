@@ -45,6 +45,15 @@ Deno.serve(async (req) => {
     return json({ error: 'Сессия входа недействительна' }, 401);
   }
 
+  // Доверенным пользователям (см. admin-panel) клиент не применяет
+  // 10-минутный таймер локальной сессии — постоянный доступ на любом их
+  // устройстве. telegram_users закрыта от anon-ключа (см. schema.sql), так
+  // что проверить статус можно только через service_role здесь.
+  if (body.action === 'get_trusted') {
+    const { data } = await supabase.from('telegram_users').select('trusted').eq('telegram_id', user.id).maybeSingle();
+    return json({ trusted: Boolean(data?.trusted) });
+  }
+
   if (body.action === 'get_active') {
     const { data } = await supabase
       .from('car_sessions')
