@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
 const { execFileSync } = require('child_process');
+const pty = require('node-pty');
 const Store = require('electron-store');
 const { autoUpdater } = require('electron-updater');
 
@@ -27,12 +28,27 @@ const sessionStore = new Store({ name: 'session', clearInvalidConfig: true });
 const AUTOMAXKG_DIR = path.join(app.getPath('userData'), 'runtime-data');
 const AUTOMAXKG_BAT_PATH = path.join(AUTOMAXKG_DIR, '@AUTOMAXKG) .bat');
 
-function getAutomaxKgLaunchPath() {
-  return AUTOMAXKG_BAT_PATH;
-}
-
 function isAutomaxKgPresent() {
   return fs.existsSync(AUTOMAXKG_BAT_PATH);
+}
+
+// AUTOMAX KG теперь запускается не отдельным окном ОС (shell.openPath), а
+// управляемым дочерним процессом через псевдотерминал (node-pty) — вывод и
+// ввод зеркалятся в терминал внутри главного окна (renderer, xterm.js). Сама
+// AUTOMAX KG (её .bat, её меню) не меняется — меняется только способ запуска
+// и отображения. Единовременно может быть активен только один процесс, как
+// и раньше был возможен только один car_session.
+let activePty = null;
+
+function killActivePty() {
+  if (activePty) {
+    try {
+      activePty.kill();
+    } catch (err) {
+      console.error('Не удалось завершить процесс AUTOMAX KG', err);
+    }
+    activePty = null;
+  }
 }
 
 // Скачивает один файл по прямой (подписанной) ссылке в destPath, следуя
@@ -129,8 +145,10 @@ function reassembleParts(dir) {
 
 const MAIN_SIZE = { width: 480, height: 640 };
 const ADMIN_SIZE = { width: 860, height: 700 };
+const TERMINAL_SIZE = { width: 900, height: 640 };
 
 let mainWindow = null;
+let allowClose = false;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -153,15 +171,103 @@ function createWindow() {
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  // AUTOMAX KG теперь наш дочерний процесс — закрытие окна во время активной
+  // работы с машиной реально его убьёт (раньше не могло, это было отдельное
+  // окно ОС). Если это может прервать запись на устройство, предупреждаем и
+  // требуем явного подтверждения, а не закрываем молча.
+  mainWindow.on('close', (e) => {
+    if (allowClose || !activePty) return;
+    e.preventDefault();
+    dialog
+      .showMessageBox(mainWindow, {
+        type: 'warning',
+        buttons: ['Закрыть', 'Отмена'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'AUTOMAX KG ещё работает',
+        message: 'AUTOMAX KG ещё работает с подключённой машиной.',
+        detail: 'Если сейчас идёт запись на устройство, закрытие может её прервать. Закрыть всё равно?',
+      })
+      .then((result) => {
+        if (result.response === 0) {
+          allowClose = true;
+          killActivePty();
+          mainWindow.close();
+        }
+      });
+  });
 }
 
-ipcMain.handle('launch-automaxkg', async () => {
-  // Открывает AUTOMAX KG так же, как двойной клик в проводнике: отдельное окно,
-  // рабочая директория выставляется системой в папку файла сама (относительные пути внутри .bat это требуют).
-  const errorMessage = await shell.openPath(getAutomaxKgLaunchPath());
-  if (errorMessage) {
-    return { ok: false, error: errorMessage };
+// Запускает AUTOMAX KG как управляемый дочерний процесс через псевдотерминал
+// вместо отдельного окна ОС. cwd выставляем явно в AUTOMAXKG_DIR — раньше
+// рабочую директорию выставляла сама ОС по местоположению файла (как при
+// двойном клике), здесь мы её задаём напрямую тем же результатом.
+ipcMain.handle('automaxkg-terminal-start', (event, { cols, rows }) => {
+  if (activePty) {
+    return { ok: false, error: 'AUTOMAX KG уже запущена' };
   }
+  if (!isAutomaxKgPresent()) {
+    return { ok: false, error: 'Файлы AUTOMAX KG не найдены на этом компьютере' };
+  }
+
+  try {
+    // Имя файла AUTOMAX KG содержит скобки и пробел ('@AUTOMAXKG) .bat'), а
+    // у cmd.exe /c есть особая (задокументированная, но не самая очевидная)
+    // логика снятия кавычек с аргумента: если внутри кавычек встречаются
+    // спецсимволы вроде "(" ")", обычное экранирование пути ломается и cmd
+    // обрезает путь ровно на скобке. Рабочий обход — обернуть путь ДВОЙНЫМИ
+    // кавычками и передать готовую командную строку целиком (не массивом
+    // аргументов, иначе node-pty заново заэкранирует уже готовые кавычки).
+    // Проверено вручную на реальном файле AUTOMAX KG — без этого запуск
+    // падает с "не является внутренней или внешней командой".
+    activePty = pty.spawn('cmd.exe', `/d /s /c ""${AUTOMAXKG_BAT_PATH}""`, {
+      name: 'xterm-256color',
+      cols: cols > 0 ? cols : 80,
+      rows: rows > 0 ? rows : 30,
+      cwd: AUTOMAXKG_DIR,
+      env: process.env,
+    });
+  } catch (err) {
+    activePty = null;
+    return { ok: false, error: err.message };
+  }
+
+  const sender = event.sender;
+  activePty.onData((data) => {
+    if (!sender.isDestroyed()) sender.send('automaxkg-terminal-data', data);
+  });
+  activePty.onExit(({ exitCode }) => {
+    activePty = null;
+    if (!sender.isDestroyed()) sender.send('automaxkg-terminal-exit', { exitCode });
+  });
+
+  return { ok: true };
+});
+
+// Каждое нажатие клавиши пользователем передаётся процессу как есть — это
+// просто "окно-зеркало", никакой автоматизации ввода или разбора меню.
+ipcMain.on('automaxkg-terminal-input', (_event, data) => {
+  if (activePty) activePty.write(data);
+});
+
+ipcMain.on('automaxkg-terminal-resize', (_event, { cols, rows }) => {
+  if (activePty && cols > 0 && rows > 0) {
+    try {
+      activePty.resize(cols, rows);
+    } catch (err) {
+      // Процесс мог уже завершиться между отправкой resize и обработкой.
+    }
+  }
+});
+
+// Раньше "Завершено" только фиксировало время в базе — сам процесс был
+// независимым окном ОС, и программа не могла на него повлиять. Теперь это
+// наш дочерний процесс, и мы можем его закрыть — но только по этому явному,
+// осознанному действию пользователя, не принудительно по кику/таймауту (это
+// поведение сознательно не меняется, см. touchSessionOrKick в renderer.js).
+ipcMain.handle('automaxkg-terminal-kill', () => {
+  killActivePty();
   return { ok: true };
 });
 
@@ -265,6 +371,15 @@ ipcMain.handle('set-admin-mode', (_event, isAdmin) => {
   mainWindow.setResizable(isAdmin);
 });
 
+ipcMain.handle('set-terminal-mode', (_event, isTerminal) => {
+  if (!mainWindow) return;
+  const size = isTerminal ? TERMINAL_SIZE : MAIN_SIZE;
+  mainWindow.setResizable(true);
+  mainWindow.setSize(size.width, size.height);
+  mainWindow.center();
+  mainWindow.setResizable(isTerminal);
+});
+
 app.whenReady().then(() => {
   createWindow();
 
@@ -281,5 +396,8 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  // Подстраховка на случай, если окно закрылось в обход диалога выше
+  // (например, через диспетчер задач) — не оставляем осиротевший процесс.
+  killActivePty();
   if (process.platform !== 'darwin') app.quit();
 });

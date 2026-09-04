@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <title>russificator.kg</title>
+  <link rel="stylesheet" href="vendor/xterm.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -57,6 +58,15 @@
     <button id="finish-session-btn" class="finish-btn" hidden>Завершено</button>
   </main>
 
+  <main class="screen" id="screen-terminal" hidden>
+    <div class="terminal-header">
+      <span id="terminal-car-label"></span>
+    </div>
+    <div id="terminal-container"></div>
+    <p id="terminal-status" class="status"></p>
+    <button id="finish-terminal-btn" class="finish-btn">Завершено</button>
+  </main>
+
   <main class="screen" id="screen-admin" hidden>
     <div class="admin-shell">
       <aside class="admin-sidebar">
@@ -96,6 +106,8 @@
   </div>
 
   <script src="config.js"></script>
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

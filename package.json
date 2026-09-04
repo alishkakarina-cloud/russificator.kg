@@ -1,6 +1,6 @@
 {
   "name": "russificator-kg",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "russificator.kg desktop launcher",
   "main": "main.js",
   "author": "alish",
@@ -12,12 +12,15 @@
     "release": "electron-builder --publish always"
   },
   "devDependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "electron": "^32.0.0",
     "electron-builder": "^25.0.0"
   },
   "build": {
     "appId": "kg.russificator.app",
     "productName": "russificator.kg",
+    "npmRebuild": false,
     "files": [
       "main.js",
       "preload.js",
@@ -44,6 +47,10 @@
   },
   "dependencies": {
     "electron-store": "^8.2.0",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "node-pty": "^1.1.0"
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
   }
 }

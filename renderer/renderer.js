@@ -16,6 +16,7 @@ const screens = {
   rejected: document.getElementById('screen-rejected'),
   downloading: document.getElementById('screen-downloading'),
   main: document.getElementById('screen-main'),
+  terminal: document.getElementById('screen-terminal'),
   admin: document.getElementById('screen-admin'),
 };
 const waitingText = document.getElementById('waiting-text');
@@ -335,6 +336,79 @@ const activeSessionLabel = document.getElementById('active-session-label');
 const finishBtn = document.getElementById('finish-session-btn');
 const adminOpenBtn = document.getElementById('admin-open-btn');
 
+const terminalFinishBtn = document.getElementById('finish-terminal-btn');
+const terminalCarLabel = document.getElementById('terminal-car-label');
+const terminalContainer = document.getElementById('terminal-container');
+const terminalStatus = document.getElementById('terminal-status');
+
+// ------------------------- Встроенный терминал AUTOMAX KG -------------------------
+// AUTOMAX KG больше не открывается отдельным окном ОС — она запускается как
+// управляемый дочерний процесс (node-pty) в main-процессе, а её вывод и ввод
+// зеркалятся сюда через xterm.js. Сама AUTOMAX KG (её .bat, её меню) не
+// меняется — меняется только способ показа: встроенный терминал вместо
+// отдельного окна. Никакой автоматизации ввода нет — что пользователь
+// нажимает, то и уходит процессу напрямую.
+
+let term = null;
+let fitAddon = null;
+
+// Регистрируем ОДИН раз при загрузке, а не при каждом входе в терминал —
+// иначе при повторных заходах слушатели накапливались бы и один и тот же
+// вывод дублировался бы на экране несколько раз подряд.
+window.automaxkg.onTerminalData((data) => {
+  if (term) term.write(data);
+});
+window.automaxkg.onTerminalExit(({ exitCode }) => {
+  if (term) term.write(`\r\n\r\n[Процесс AUTOMAX KG завершён, код выхода ${exitCode}]\r\n`);
+});
+
+function handleTerminalResize() {
+  if (!term || !fitAddon) return;
+  fitAddon.fit();
+  window.automaxkg.resizeTerminal(term.cols, term.rows);
+}
+
+async function enterTerminalScreen(carSess, loginToken) {
+  await window.app.setTerminalMode(true);
+  showScreen('terminal');
+  terminalCarLabel.textContent = `${carSess.brand} ${carSess.model}`;
+  terminalStatus.textContent = '';
+
+  terminalContainer.innerHTML = '';
+  term = new Terminal({
+    convertEol: true,
+    fontSize: 14,
+    theme: { background: '#0d0f14', foreground: '#e8e8e8' },
+  });
+  fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(terminalContainer);
+  fitAddon.fit();
+  // Каждое нажатие клавиши уходит процессу как есть — это просто
+  // "окно-зеркало" на управляемый процесс, без разбора смысла ввода/вывода.
+  term.onData((data) => window.automaxkg.sendInput(data));
+  window.addEventListener('resize', handleTerminalResize);
+
+  const result = await window.automaxkg.startTerminal(term.cols, term.rows);
+  if (!result.ok) {
+    term.write(`\r\n[Ошибка запуска AUTOMAX KG: ${result.error}]\r\n`);
+    terminalStatus.textContent = 'Не удалось запустить AUTOMAX KG: ' + result.error;
+    await carSession('log_event', {
+      loginToken,
+      sessionId: carSess.id,
+      eventType: 'automaxkg_launch_error',
+      detail: { error: result.error },
+    }).catch((e) => console.error('Не удалось залогировать ошибку запуска', e));
+    return;
+  }
+
+  await carSession('log_event', {
+    loginToken,
+    sessionId: carSess.id,
+    eventType: 'automaxkg_launched',
+  }).catch((e) => console.error('Не удалось залогировать запуск', e));
+}
+
 let carModelsCache = null;
 
 async function loadCarModels() {
@@ -379,24 +453,8 @@ async function selectCarModel(model) {
       model: model.model,
     });
     activeCarSession = carSess;
-    const launchResult = await window.automaxkg.launch();
-    if (launchResult && launchResult.ok === false) {
-      await carSession('log_event', {
-        loginToken: session.loginToken,
-        sessionId: carSess.id,
-        eventType: 'automaxkg_launch_error',
-        detail: { error: launchResult.error },
-      }).catch((e) => console.error('Не удалось залогировать ошибку запуска', e));
-      status.textContent = 'Не удалось запустить AUTOMAX KG: ' + launchResult.error;
-    } else {
-      await carSession('log_event', {
-        loginToken: session.loginToken,
-        sessionId: carSess.id,
-        eventType: 'automaxkg_launched',
-      }).catch((e) => console.error('Не удалось залогировать запуск', e));
-      status.textContent = '';
-    }
-    renderActiveSession();
+    status.textContent = '';
+    await enterTerminalScreen(carSess, session.loginToken);
   } catch (err) {
     if (err.status === 409 && err.data && err.data.session) {
       activeCarSession = err.data.session;
@@ -426,16 +484,34 @@ async function finishSession() {
   const session = await window.sessionStore.get();
   if (!session) return;
   finishBtn.disabled = true;
+  terminalFinishBtn.disabled = true;
   try {
+    // Раньше AUTOMAX KG была независимым окном ОС — "Завершено" только
+    // фиксировало время в базе. Теперь это наш дочерний процесс, и мы можем
+    // его аккуратно закрыть — но только по этому явному действию человека
+    // (killTerminal — не-op, если терминал не был открыт, например при
+    // восстановлении зависшей сессии после перезапуска приложения).
+    await window.automaxkg.killTerminal().catch((e) => console.error('Не удалось завершить процесс AUTOMAX KG', e));
+    window.removeEventListener('resize', handleTerminalResize);
+    if (term) {
+      term.dispose();
+      term = null;
+      fitAddon = null;
+    }
+
     await carSession('finish', { loginToken: session.loginToken, sessionId: activeCarSession.id });
     activeCarSession = null;
+    await window.app.setTerminalMode(false);
+    showScreen('main');
     renderActiveSession();
     // Кик/истечение могли накопиться, пока сессия была активна — проверяем сразу.
     await touchSessionOrKick();
   } catch (err) {
     status.textContent = 'Не удалось завершить: ' + err.message;
+    terminalStatus.textContent = 'Не удалось завершить: ' + err.message;
   } finally {
     finishBtn.disabled = false;
+    terminalFinishBtn.disabled = false;
   }
 }
 
@@ -457,6 +533,7 @@ async function initMainScreen() {
 
 carDropdownBtn.addEventListener('click', toggleCarDropdown);
 finishBtn.addEventListener('click', finishSession);
+terminalFinishBtn.addEventListener('click', finishSession);
 
 document.getElementById('telegram-login-btn').addEventListener('click', beginTelegramLogin);
 document.getElementById('cancel-login-btn').addEventListener('click', cancelLogin);
