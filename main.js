@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const https = require('https');
 const { execFileSync } = require('child_process');
 const pty = require('node-pty');
@@ -30,6 +31,61 @@ const AUTOMAXKG_BAT_PATH = path.join(AUTOMAXKG_DIR, '@AUTOMAXKG) .bat');
 
 function isAutomaxKgPresent() {
   return fs.existsSync(AUTOMAXKG_BAT_PATH);
+}
+
+// Единственный источник AUTOMAX KG теперь — облачная докачка через Supabase
+// после входа (см. automaxkg-download ниже). До этого AUTOMAX KG раньше
+// существовала отдельными самостоятельными копиями (видимая на Рабочем
+// столе/в OneDrive, плюс случайные дубликаты от более ранних попыток её
+// скрыть) — эти копии больше не нужны и не должны оставаться на диске в
+// обход программы.
+//
+// Список путей сознательно узкий — только точные места, куда наша же
+// программа в разное время реально клала AUTOMAX KG. Мы намеренно НЕ
+// сканируем весь диск/Рабочий стол/Документы в поисках "чего-то похожего":
+// код, который сам ищет и молча удаляет файлы по всему компьютеру
+// пользователя, — это ровно то поведение, которое антивирусы распознают как
+// вредоносное (вайпер), и могло бы усилить недоверие Windows к программе,
+// а не снять его.
+function getKnownOrphanedAutomaxKgDirs() {
+  const home = os.homedir();
+  return [
+    path.join(home, 'OneDrive', 'Desktop', 'rusifikatorkg'),
+    path.join(home, 'Desktop', 'rusifikatorkg'),
+    'C:\\rusifikatorkg',
+  ];
+}
+
+// Прежде чем удалить — проверяем, что это действительно похоже на AUTOMAX KG
+// по содержимому (adb.exe рядом с папкой apk или tinove), а не просто
+// случайная папка с похожим именем/путём у пользователя. Файла самого .bat
+// может не быть (встречались неполные копии от прежних попыток переноса) —
+// поэтому проверяем по инструментам, а не по нему.
+function looksLikeAutomaxKgDir(dir) {
+  try {
+    const hasAdb = fs.existsSync(path.join(dir, 'adb.exe'));
+    const hasKnownSubdir = fs.existsSync(path.join(dir, 'apk')) || fs.existsSync(path.join(dir, 'tinove'));
+    return hasAdb && hasKnownSubdir;
+  } catch {
+    return false;
+  }
+}
+
+function cleanupOrphanedAutomaxKgCopies() {
+  const removed = [];
+  for (const dir of getKnownOrphanedAutomaxKgDirs()) {
+    if (path.resolve(dir) === path.resolve(AUTOMAXKG_DIR)) continue; // на всякий случай не даём задеть рабочую копию
+    if (!fs.existsSync(dir)) continue;
+    if (!looksLikeAutomaxKgDir(dir)) continue;
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      removed.push(dir);
+      console.log('Удалена старая независимая копия AUTOMAX KG:', dir);
+    } catch (err) {
+      console.error('Не удалось удалить старую копию AUTOMAX KG:', dir, err);
+    }
+  }
+  return removed;
 }
 
 // AUTOMAX KG теперь запускается не отдельным окном ОС (shell.openPath), а
@@ -273,6 +329,12 @@ ipcMain.handle('automaxkg-terminal-kill', () => {
 
 ipcMain.handle('automaxkg-status', () => ({ available: isAutomaxKgPresent() }));
 
+// Разовое уведомление для интерфейса о том, что при старте были найдены и
+// удалены старые независимые копии AUTOMAX KG — renderer запрашивает это
+// один раз после входа; если ничего не удалялось, вернётся пустой список и
+// баннер просто не покажется.
+ipcMain.handle('automaxkg-cleanup-result', () => orphanedCleanupResult);
+
 // Скачивает файлы AUTOMAX KG с приватного хранилища в скрытую системную
 // папку. Список файлов (с короткоживущими подписанными ссылками) renderer
 // получает заранее от Edge Function automaxkg-manifest, которая сама
@@ -380,7 +442,10 @@ ipcMain.handle('set-terminal-mode', (_event, isTerminal) => {
   mainWindow.setResizable(isTerminal);
 });
 
+let orphanedCleanupResult = [];
+
 app.whenReady().then(() => {
+  orphanedCleanupResult = cleanupOrphanedAutomaxKgCopies();
   createWindow();
 
   // Обновление кода приложения (это) и обновление файлов прошивок AUTOMAX KG —

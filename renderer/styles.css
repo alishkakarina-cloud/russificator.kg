@@ -59,6 +59,33 @@ h1 {
   color: #9aa0a6;
 }
 
+.notice {
+  text-align: left;
+  background: #1c2333;
+  border: 1px solid #2f3b56;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.notice p {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #c7d0e0;
+}
+
+.notice-dismiss-btn {
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #f2f2f2;
+  background: #2a3350;
+  border: 1px solid #3a4568;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
 .secondary-btn {
   width: 100%;
   margin-top: 12px;

@@ -961,4 +961,21 @@ window.app.getVersion().then((version) => {
   document.getElementById('app-version').textContent = `v${version}`;
 });
 
+// Разово показываем, если при старте программа сама нашла и удалила старые
+// независимые копии AUTOMAX KG (см. cleanupOrphanedAutomaxKgCopies в main.js)
+// — молчаливое удаление файлов пользователя без объяснения было бы плохой
+// практикой, даже если оно и оправдано с точки зрения безопасности.
+window.automaxkg.getCleanupResult().then((removed) => {
+  if (!removed || !removed.length) return;
+  const notice = document.getElementById('cleanup-notice');
+  const text = document.getElementById('cleanup-notice-text');
+  text.textContent =
+    `В целях безопасности удалены старые дублирующиеся копии AUTOMAX KG, найденные на этом компьютере (${removed.length}) — ` +
+    `теперь программа использует только одну копию, которую скачивает сама.`;
+  notice.hidden = false;
+});
+document.getElementById('cleanup-notice-dismiss').addEventListener('click', () => {
+  document.getElementById('cleanup-notice').hidden = true;
+});
+
 resumeExistingSession();
