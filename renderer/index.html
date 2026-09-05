@@ -17,7 +17,26 @@
     <h1>russificator.kg</h1>
     <p class="subtitle">Вход в систему</p>
     <button id="telegram-login-btn" class="primary-btn">Войти через Telegram</button>
+    <button id="update-available-btn" class="update-btn" hidden>
+      <span id="update-btn-progress" class="update-btn-progress"></span>
+      <span class="update-btn-content">
+        <span class="update-btn-title">Доступно новое обновление</span>
+        <span id="update-btn-subtitle" class="update-btn-subtitle">Скачать</span>
+      </span>
+    </button>
     <p id="login-status" class="status"></p>
+  </main>
+
+  <main class="screen" id="screen-forced-update" hidden>
+    <h1>russificator.kg</h1>
+    <p class="subtitle">Установлена устаревшая версия программы — нужно обновиться, чтобы продолжить</p>
+    <button id="forced-update-btn" class="update-btn">
+      <span id="forced-update-btn-progress" class="update-btn-progress"></span>
+      <span class="update-btn-content">
+        <span class="update-btn-title">Обновить сейчас</span>
+        <span id="forced-update-btn-subtitle" class="update-btn-subtitle">Скачать</span>
+      </span>
+    </button>
   </main>
 
   <main class="screen" id="screen-waiting" hidden>

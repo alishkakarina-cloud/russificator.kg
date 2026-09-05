@@ -12,6 +12,7 @@ const SESSION_MS = 10 * 60 * 1000;
 
 const screens = {
   login: document.getElementById('screen-login'),
+  forcedUpdate: document.getElementById('screen-forced-update'),
   waiting: document.getElementById('screen-waiting'),
   rejected: document.getElementById('screen-rejected'),
   downloading: document.getElementById('screen-downloading'),
@@ -659,6 +660,120 @@ document.getElementById('telegram-login-btn').addEventListener('click', beginTel
 document.getElementById('cancel-login-btn').addEventListener('click', cancelLogin);
 document.getElementById('retry-login-btn').addEventListener('click', retryLogin);
 
+// ------------------------- Обновление: кнопка на входе + принудительный экран -------------------------
+// electron-updater только проверяет наличие обновления сам при старте
+// (autoDownload выключен в main.js) — саму докачку запускает явный клик по
+// кнопке, а не молча в фоне. Два места, где может понадобиться кнопка
+// докачки: необязательная "Доступно новое обновление" на обычном экране
+// входа, и обязательная на экране принудительного обновления (см.
+// checkForcedUpdate ниже) — обе используют один и тот же прогресс/ошибку.
+
+const updateBtn = document.getElementById('update-available-btn');
+const updateBtnProgress = document.getElementById('update-btn-progress');
+const updateBtnSubtitle = document.getElementById('update-btn-subtitle');
+const forcedUpdateBtn = document.getElementById('forced-update-btn');
+const forcedUpdateBtnProgress = document.getElementById('forced-update-btn-progress');
+const forcedUpdateBtnSubtitle = document.getElementById('forced-update-btn-subtitle');
+let updateDownloadInProgress = false;
+
+function showUpdateAvailable() {
+  if (updateDownloadInProgress) return;
+  updateBtn.hidden = false;
+  updateBtnSubtitle.textContent = 'Скачать';
+  updateBtnProgress.style.width = '0%';
+}
+
+function hideUpdateAvailable() {
+  if (updateDownloadInProgress) return;
+  updateBtn.hidden = true;
+}
+
+function applyUpdateStatus(status) {
+  if (status && status.available) showUpdateAvailable();
+  else hideUpdateAvailable();
+}
+
+window.app.getUpdateStatus().then(applyUpdateStatus);
+window.app.onUpdateStatusChanged(applyUpdateStatus);
+
+window.app.onUpdateDownloadProgress(({ percent }) => {
+  const pct = Math.round(percent);
+  const text = `Скачивание... ${pct}%`;
+  updateBtnProgress.style.width = `${pct}%`;
+  updateBtnSubtitle.textContent = text;
+  forcedUpdateBtnProgress.style.width = `${pct}%`;
+  forcedUpdateBtnSubtitle.textContent = text;
+});
+
+window.app.onUpdateDownloadError(() => {
+  updateDownloadInProgress = false;
+  document.getElementById('telegram-login-btn').disabled = false;
+  updateBtn.disabled = false;
+  updateBtnSubtitle.textContent = 'Ошибка скачивания — нажмите ещё раз';
+  updateBtnProgress.style.width = '0%';
+  forcedUpdateBtn.disabled = false;
+  forcedUpdateBtnSubtitle.textContent = 'Ошибка скачивания — нажмите ещё раз';
+  forcedUpdateBtnProgress.style.width = '0%';
+});
+
+async function startUpdateDownloadFlow() {
+  if (updateDownloadInProgress) return;
+  updateDownloadInProgress = true;
+  updateBtn.disabled = true;
+  forcedUpdateBtn.disabled = true;
+  document.getElementById('telegram-login-btn').disabled = true;
+  updateBtnSubtitle.textContent = 'Скачивание... 0%';
+  updateBtnProgress.style.width = '0%';
+  forcedUpdateBtnSubtitle.textContent = 'Скачивание... 0%';
+  forcedUpdateBtnProgress.style.width = '0%';
+  await window.app.startUpdateDownload();
+  // Дальше либо придёт update-download-progress -> ... -> приложение само
+  // перезапустится (quitAndInstall в main.js), либо update-download-error,
+  // если что-то пошло не так — обработчик выше вернёт кнопки в рабочее
+  // состояние.
+}
+
+updateBtn.addEventListener('click', startUpdateDownloadFlow);
+forcedUpdateBtn.addEventListener('click', startUpdateDownloadFlow);
+
+// ------------------------- Принудительное обновление (min_version) -------------------------
+// Минимально разрешённая версия хранится в Supabase (app_settings) — это
+// сознательно НЕ то же самое, что "Доступно новое обновление" выше: та
+// кнопка — вежливое предложение, эта проверка — жёсткий запрет запускать
+// программу младше min_version вообще, до самого экрана входа. Значение
+// по умолчанию (1.0.0) никого не блокирует — поднимается вручную в базе,
+// когда реально нужно заставить всех обновиться.
+function compareVersions(a, b) {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
+async function checkForcedUpdate() {
+  try {
+    const rows = await supabaseRequest('app_settings?key=eq.min_version&select=value');
+    const minVersion = rows && rows[0] ? rows[0].value : null;
+    if (!minVersion) return false;
+
+    const currentVersion = await window.app.getVersion();
+    if (compareVersions(currentVersion, minVersion) < 0) {
+      showScreen('forcedUpdate');
+      return true;
+    }
+  } catch (err) {
+    // Нет сети / Supabase недоступен — не блокируем работу из-за того, что
+    // не смогли проверить требование, продолжаем как обычно.
+    console.error('Не удалось проверить минимальную версию, продолжаем без блокировки', err);
+  }
+  return false;
+}
+
 // ------------------------------- Админ-панель -------------------------------
 
 let calendarViewDate = new Date();
@@ -1071,4 +1186,6 @@ document.getElementById('cleanup-notice-dismiss').addEventListener('click', () =
   document.getElementById('cleanup-notice').hidden = true;
 });
 
-resumeExistingSession();
+checkForcedUpdate().then((blocked) => {
+  if (!blocked) resumeExistingSession();
+});

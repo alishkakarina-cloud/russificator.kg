@@ -467,15 +467,34 @@ ipcMain.handle('set-terminal-mode', (_event, isTerminal) => {
 
 let orphanedCleanupResult = [];
 
+// Последний известный статус проверки обновления — renderer запрашивает его
+// один раз при загрузке экрана входа (get-update-status, на случай если
+// проверка уже успела завершиться до того, как renderer подписался на
+// событие), плюс подписывается на живое событие ниже для случая, когда
+// проверка ещё идёт в момент загрузки экрана.
+let latestUpdateStatus = null;
+
+function sendUpdateStatus(status) {
+  latestUpdateStatus = status;
+  if (mainWindow) mainWindow.webContents.send('update-status-changed', status);
+}
+
+ipcMain.handle('get-update-status', () => latestUpdateStatus);
+
+ipcMain.handle('start-update-download', () => {
+  autoUpdater.downloadUpdate().catch((err) => {
+    log.error('[update] запуск докачки не удался', err);
+    if (mainWindow) mainWindow.webContents.send('update-download-error', { message: err.message });
+  });
+  return { ok: true };
+});
+
 app.whenReady().then(() => {
   orphanedCleanupResult = cleanupOrphanedAutomaxKgCopies();
   createWindow();
 
   // Обновление кода приложения (это) и обновление файлов прошивок AUTOMAX KG —
   // разные, никак не связанные механизмы. Здесь только про сам код.
-  // Тихая докачка + применение при следующем перезапуске — поведение
-  // electron-updater по умолчанию; checkForUpdatesAndNotify сама показывает
-  // системное уведомление, когда обновление скачано.
   if (app.isPackaged) {
     // Дифференциальная докачка (скачать только изменённые блоки, а не весь
     // файл заново) на практике стабильно падает с ошибкой "sha512 checksum
@@ -489,14 +508,37 @@ app.whenReady().then(() => {
     // похоже, и оставляет соединение в нестабильном состоянии.
     autoUpdater.disableDifferentialDownload = true;
 
-    autoUpdater.on('checking-for-update', () => log.info('[update] проверка обновлений...'));
-    autoUpdater.on('update-available', (info) => log.info('[update] найдено обновление:', info.version));
-    autoUpdater.on('update-not-available', () => log.info('[update] обновлений нет, версия актуальна'));
-    autoUpdater.on('download-progress', (p) => log.info(`[update] скачивание: ${Math.round(p.percent)}%`));
-    autoUpdater.on('update-downloaded', (info) => log.info('[update] обновление скачано полностью:', info.version));
-    autoUpdater.on('error', (err) => log.error('[update] ошибка автообновления:', err));
+    // Раньше докачка начиналась сама, тихо, без ведома пользователя, сразу
+    // как только находилось обновление (autoDownload по умолчанию — true).
+    // Теперь только ПРОВЕРЯЕМ наличие обновления сразу при старте — саму
+    // докачку запускает пользователь явно, нажав кнопку "Доступно новое
+    // обновление" на экране входа (см. renderer.js, кнопка появляется/
+    // прячется по событию update-status-changed).
+    autoUpdater.autoDownload = false;
 
-    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+    autoUpdater.on('checking-for-update', () => log.info('[update] проверка обновлений...'));
+    autoUpdater.on('update-available', (info) => {
+      log.info('[update] найдено обновление:', info.version);
+      sendUpdateStatus({ available: true, version: info.version });
+    });
+    autoUpdater.on('update-not-available', () => {
+      log.info('[update] обновлений нет, версия актуальна');
+      sendUpdateStatus({ available: false });
+    });
+    autoUpdater.on('download-progress', (p) => {
+      log.info(`[update] скачивание: ${Math.round(p.percent)}%`);
+      if (mainWindow) mainWindow.webContents.send('update-download-progress', { percent: p.percent });
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      log.info('[update] обновление скачано полностью, применяем и перезапускаемся:', info.version);
+      autoUpdater.quitAndInstall();
+    });
+    autoUpdater.on('error', (err) => {
+      log.error('[update] ошибка автообновления:', err);
+      if (mainWindow) mainWindow.webContents.send('update-download-error', { message: err.message });
+    });
+
+    autoUpdater.checkForUpdates().catch((err) => {
       log.error('Проверка обновлений не удалась', err);
     });
   }

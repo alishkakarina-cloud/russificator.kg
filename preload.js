@@ -24,6 +24,17 @@ contextBridge.exposeInMainWorld('app', {
   getVersion: () => ipcRenderer.invoke('get-app-version'),
   setAdminMode: (isAdmin) => ipcRenderer.invoke('set-admin-mode', isAdmin),
   setTerminalMode: (isTerminal) => ipcRenderer.invoke('set-terminal-mode', isTerminal),
+  getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+  startUpdateDownload: () => ipcRenderer.invoke('start-update-download'),
+  onUpdateStatusChanged: (callback) => {
+    ipcRenderer.on('update-status-changed', (_event, status) => callback(status));
+  },
+  onUpdateDownloadProgress: (callback) => {
+    ipcRenderer.on('update-download-progress', (_event, data) => callback(data));
+  },
+  onUpdateDownloadError: (callback) => {
+    ipcRenderer.on('update-download-error', (_event, data) => callback(data));
+  },
 });
 
 contextBridge.exposeInMainWorld('sessionStore', {

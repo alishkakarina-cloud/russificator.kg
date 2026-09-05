@@ -122,3 +122,28 @@ create table if not exists public.session_audit_log (
 alter table public.session_audit_log enable row level security;
 
 create index if not exists session_audit_log_session_id_idx on public.session_audit_log (session_id);
+
+-- Принудительное обновление: min_version — минимально разрешённая версия
+-- программы. Если у пользователя версия младше — приложение показывает
+-- экран принудительного обновления вместо экрана входа (см. checkForcedUpdate
+-- в renderer.js) и не даёт продолжить, пока не обновится. Значение по
+-- умолчанию (1.0.0) никого не блокирует — поднимается вручную в этой
+-- таблице, когда реально нужно заставить всех обновиться до конкретной
+-- версии. anon может только читать — менять могут только через service_role/
+-- дашборд Supabase, не из самого приложения.
+create table if not exists public.app_settings (
+  key text primary key,
+  value text not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.app_settings enable row level security;
+
+create policy "anon can read app settings"
+  on public.app_settings for select
+  to anon
+  using (true);
+
+insert into public.app_settings (key, value)
+values ('min_version', '1.0.0')
+on conflict (key) do nothing;

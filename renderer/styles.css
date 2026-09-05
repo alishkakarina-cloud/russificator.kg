@@ -59,6 +59,55 @@ h1 {
   color: #9aa0a6;
 }
 
+/* Кнопка "Доступно новое обновление" на экране входа — появляется только
+   когда electron-updater реально нашёл более новую версию (см. renderer.js,
+   update-status-changed). Зелёная полоса прогресса (.update-btn-progress)
+   растёт слева направо внутри самой кнопки по мере скачивания. */
+.update-btn {
+  position: relative;
+  width: 100%;
+  margin-top: 10px;
+  padding: 11px 16px;
+  border-radius: 8px;
+  border: 1px solid #2e7d46;
+  background: #16241a;
+  color: #f2f2f2;
+  cursor: pointer;
+  overflow: hidden;
+  text-align: center;
+}
+
+.update-btn:disabled {
+  cursor: default;
+}
+
+.update-btn-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 0%;
+  background: #2fbf60;
+  transition: width 0.25s ease;
+}
+
+.update-btn-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.update-btn-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.update-btn-subtitle {
+  font-size: 11px;
+  color: #b8c2bb;
+}
+
 .notice {
   text-align: left;
   background: #1c2333;
