@@ -299,33 +299,6 @@ async function tryLocalSession() {
   return true;
 }
 
-// Перепроверяет кик после "Завершено" — но только если сейчас нет активной
-// сессии работы с машиной (пока activeCarSession не пуст, кик откладывается
-// до нажатия "Завершено", см. ограничения задачи). НЕ продлевает 10-минутный
-// таймер входа — раньше здесь был sessionStore.touch(), из-за чего каждое
-// "Завершено" визуально сбрасывало обратный отсчёт до 10:00, что и было
-// зафиксировано как нежелательное поведение: таймер должен идти строго от
-// момента входа, независимо от того, сколько машин пользователь успел
-// закрыть за это время.
-async function checkKickAfterFinish() {
-  if (activeCarSession) return true;
-
-  const session = await window.sessionStore.get();
-  if (!session) return true;
-
-  try {
-    if (await isBlocked(session.telegramId)) {
-      stopSessionTimer();
-      await window.sessionStore.clear();
-      showScreen('login');
-      return false;
-    }
-  } catch (err) {
-    console.error('Проверка блокировки не удалась, продолжаем офлайн', err);
-  }
-
-  return true;
-}
 
 async function resumeExistingSession() {
   if (await tryLocalSession()) return;
@@ -619,12 +592,18 @@ async function finishSession() {
 
     await carSession('finish', { loginToken: session.loginToken, sessionId: activeCarSession.id });
     activeCarSession = null;
+
+    // "Завершено" теперь означает конец сессии целиком, а не просто "выбери
+    // следующую марку" — пользователь возвращается на экран входа через
+    // Telegram и должен пройти его заново (для доверенных — тот же экран,
+    // но одобрение проходит автоматически, как и раньше). Останавливаем
+    // таймер здесь как обычное следствие выхода из системы, а не как
+    // отдельное "продление/сброс" — сам счётчик всё равно больше не нужен,
+    // раз пользователь уходит с рабочего экрана.
+    stopSessionTimer();
+    await window.sessionStore.clear();
     await window.app.setTerminalMode(false);
-    showScreen('main');
-    renderActiveSession();
-    // Кик мог накопиться, пока сессия была активна — проверяем сразу.
-    // Таймер сессии входа НЕ трогаем — он продолжает идти от момента входа.
-    await checkKickAfterFinish();
+    showScreen('login');
   } catch (err) {
     status.textContent = 'Не удалось завершить: ' + err.message;
     terminalStatus.textContent = 'Не удалось завершить: ' + err.message;
