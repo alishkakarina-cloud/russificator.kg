@@ -7,6 +7,14 @@ const { execFileSync } = require('child_process');
 const pty = require('node-pty');
 const Store = require('electron-store');
 const { autoUpdater } = require('electron-updater');
+const log = require('electron-log');
+
+// У окна приложения нет консоли — без файлового лога любая проблема с
+// автообновлением (не тот файл скачался, не удалось запустить установщик и
+// т.п.) была абсолютно невидима: ошибка просто улетала в console.error в
+// никуда. Лог пишется в %APPDATA%\russificator-kg\logs\main.log.
+log.transports.file.level = 'info';
+autoUpdater.logger = log;
 
 app.disableHardwareAcceleration();
 
@@ -454,8 +462,15 @@ app.whenReady().then(() => {
   // electron-updater по умолчанию; checkForUpdatesAndNotify сама показывает
   // системное уведомление, когда обновление скачано.
   if (app.isPackaged) {
+    autoUpdater.on('checking-for-update', () => log.info('[update] проверка обновлений...'));
+    autoUpdater.on('update-available', (info) => log.info('[update] найдено обновление:', info.version));
+    autoUpdater.on('update-not-available', () => log.info('[update] обновлений нет, версия актуальна'));
+    autoUpdater.on('download-progress', (p) => log.info(`[update] скачивание: ${Math.round(p.percent)}%`));
+    autoUpdater.on('update-downloaded', (info) => log.info('[update] обновление скачано полностью:', info.version));
+    autoUpdater.on('error', (err) => log.error('[update] ошибка автообновления:', err));
+
     autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-      console.error('Проверка обновлений не удалась', err);
+      log.error('Проверка обновлений не удалась', err);
     });
   }
 });

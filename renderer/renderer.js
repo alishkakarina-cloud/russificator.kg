@@ -240,6 +240,20 @@ function retryLogin() {
   showScreen('login');
 }
 
+// Доверенным пользователям (админ-панель -> Пользователи -> "Доверенный")
+// 10-минутный таймер не применяется — постоянный доступ без повторного
+// входа. Кик по-прежнему действует на них так же, как на всех — trusted
+// отключает только этот один конкретный путь разлогина, не оба.
+async function isTrustedUser(loginToken) {
+  try {
+    const result = await carSession('get_trusted', { loginToken });
+    return Boolean(result.trusted);
+  } catch (err) {
+    console.error('Проверка доверенного статуса не удалась, действуем как для обычного пользователя', err);
+    return false;
+  }
+}
+
 async function tryLocalSession() {
   let session;
   try {
@@ -250,17 +264,7 @@ async function tryLocalSession() {
   }
   if (!session) return false;
 
-  // Доверенным пользователям (админ-панель -> Пользователи -> "Доверенный")
-  // 10-минутный таймер не применяется — постоянный доступ без повторного
-  // входа. Кик по-прежнему действует на них так же, как на всех — trusted
-  // отключает только этот один конкретный путь разлогина, не оба.
-  let trusted = false;
-  try {
-    const result = await carSession('get_trusted', { loginToken: session.loginToken });
-    trusted = Boolean(result.trusted);
-  } catch (err) {
-    console.error('Проверка доверенного статуса не удалась, действуем как для обычного пользователя', err);
-  }
+  const trusted = await isTrustedUser(session.loginToken);
 
   if (!trusted && Date.now() - session.lastActivityAt > SESSION_MS) {
     // loginToken остаётся approved на сервере навсегда — 10 минут это только
@@ -303,6 +307,7 @@ async function touchSessionOrKick() {
 
   try {
     if (await isBlocked(session.telegramId)) {
+      stopSessionTimer();
       await window.sessionStore.clear();
       showScreen('login');
       return false;
@@ -419,6 +424,100 @@ async function enterTerminalScreen(carSess, loginToken) {
     sessionId: carSess.id,
     eventType: 'automaxkg_launched',
   }).catch((e) => console.error('Не удалось залогировать запуск', e));
+}
+
+// ------------------------- Видимый таймер сессии (10 минут) -------------------------
+// Раньше 10-минутный лимит проверялся только в момент входа/резюме — пока
+// приложение оставалось открытым, ничего не мешало сидеть в нём (и работать
+// с AUTOMAX KG) сколько угодно. Теперь лимит соблюдается всё время, пока
+// приложение открыто, и виден пользователю как обратный отсчёт — одинаково
+// на экране выбора марки и во встроенном терминале (элемент не привязан ни
+// к одному .screen, см. styles.css).
+//
+// СОЗНАТЕЛЬНОЕ РЕШЕНИЕ, НЕ БАГ: по истечении таймера AUTOMAX KG закрывается
+// принудительно, даже если в этот момент идёт активная запись прошивки в
+// машину. Раньше (и всё ещё для кика администратором) активный процесс
+// нарочно не трогался — здесь это правило намеренно нарушено по прямому
+// требованию владельца бизнеса, который осознанно принял риск прерывания
+// записи ради жёсткого лимита сессии. НЕ "исправлять" это молча обратно на
+// более безопасное поведение (например, ждать завершения активной сессии)
+// — если понадобится другая логика, это отдельная осознанная задача.
+
+const sessionTimerEl = document.getElementById('session-timer');
+const sessionTimerText = document.getElementById('session-timer-text');
+let sessionTimerInterval = null;
+
+function stopSessionTimer() {
+  if (sessionTimerInterval) {
+    clearInterval(sessionTimerInterval);
+    sessionTimerInterval = null;
+  }
+  sessionTimerEl.hidden = true;
+}
+
+function startSessionTimer(trusted) {
+  stopSessionTimer();
+  if (trusted) return; // у доверенных истечения нет — таймер не нужен и не показывается
+
+  sessionTimerEl.hidden = false;
+  sessionTimerInterval = setInterval(sessionTimerTick, 1000);
+  sessionTimerTick();
+}
+
+async function sessionTimerTick() {
+  const session = await window.sessionStore.get();
+  if (!session) {
+    stopSessionTimer();
+    return;
+  }
+
+  const remainingMs = session.lastActivityAt + SESSION_MS - Date.now();
+  if (remainingMs <= 0) {
+    await forceExpireSession(session);
+    return;
+  }
+
+  const totalSec = Math.ceil(remainingMs / 1000);
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  sessionTimerText.textContent = `${mm}:${String(ss).padStart(2, '0')}`;
+  sessionTimerEl.classList.toggle('warn', totalSec <= 60);
+}
+
+// Принудительное завершение по истечении таймера — единственный случай,
+// когда AUTOMAX KG закрывается насильно во время реальной работы (см.
+// комментарий выше). Отличается от обычного "Завершено" пометкой в базе
+// (reason: 'timer_expired'), чтобы в истории сессий было видно, что это не
+// человек сам завершил работу, а сработал лимит времени.
+async function forceExpireSession(session) {
+  stopSessionTimer();
+
+  await window.automaxkg.killTerminal().catch((e) => console.error('Не удалось завершить AUTOMAX KG при истечении таймера', e));
+  window.removeEventListener('resize', handleTerminalResize);
+  if (term) {
+    term.dispose();
+    term = null;
+    fitAddon = null;
+  }
+
+  if (activeCarSession) {
+    await carSession('finish', {
+      loginToken: session.loginToken,
+      sessionId: activeCarSession.id,
+      detail: { auto: true, reason: 'timer_expired' },
+    }).catch((e) => console.error('Не удалось закрыть сессию при истечении таймера', e));
+    activeCarSession = null;
+  }
+
+  await carSession('log_event', {
+    loginToken: session.loginToken,
+    eventType: 'session_expired',
+    detail: { lastActivityAt: session.lastActivityAt, forced: true },
+  }).catch((e) => console.error('Не удалось залогировать истечение сессии', e));
+
+  await window.sessionStore.clear();
+  await window.app.setTerminalMode(false).catch(() => {});
+  showScreen('login');
 }
 
 let carModelsCache = null;
@@ -557,6 +656,10 @@ async function initMainScreen() {
     } catch (err) {
       console.error('Не удалось проверить активную сессию', err);
     }
+
+    startSessionTimer(await isTrustedUser(session.loginToken));
+  } else {
+    stopSessionTimer();
   }
   renderActiveSession();
 }
@@ -838,10 +941,13 @@ async function openSessionDetail(s, name, adminToken) {
     for (const ev of events) {
       const row = document.createElement('div');
       row.className = 'event-row';
-      const label =
-        ev.event_type === 'session_finished' && ev.detail?.auto
-          ? 'Закрыта автоматически (осталась незавершённой)'
-          : EVENT_LABELS[ev.event_type] || ev.event_type;
+      let label = EVENT_LABELS[ev.event_type] || ev.event_type;
+      if (ev.event_type === 'session_finished' && ev.detail?.auto) {
+        label =
+          ev.detail.reason === 'timer_expired'
+            ? 'Прервана истечением таймера (10 минут)'
+            : 'Закрыта автоматически (осталась незавершённой)';
+      }
       const detailText = fmtEventDetail(ev);
       row.innerHTML = `
         <div class="event-time">${fmtDate(ev.created_at)} ${fmtOnlyTime(ev.created_at)}</div>
