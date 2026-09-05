@@ -288,7 +288,10 @@ async function tryLocalSession() {
     console.error('Проверка блокировки не удалась, продолжаем офлайн', err);
   }
 
-  await window.sessionStore.touch();
+  // Раньше здесь стоял sessionStore.touch() — "продлевал" 10-минутное окно
+  // при каждом резюме приложения. Убрано намеренно: таймер должен идти
+  // строго от момента входа, не сбрасываясь ни от чего, включая повторное
+  // открытие приложения в рамках этих 10 минут.
   if (await ensureAutomaxKgReady(session.loginToken)) {
     showScreen('main');
     await initMainScreen();
@@ -296,10 +299,15 @@ async function tryLocalSession() {
   return true;
 }
 
-// Продлевает 10-минутное окно и перепроверяет кик — но только если сейчас
-// нет активной сессии работы с машиной. Пока activeCarSession не пуст, кик и
-// истечение откладываются до нажатия "Завершено" (см. ограничения задачи).
-async function touchSessionOrKick() {
+// Перепроверяет кик после "Завершено" — но только если сейчас нет активной
+// сессии работы с машиной (пока activeCarSession не пуст, кик откладывается
+// до нажатия "Завершено", см. ограничения задачи). НЕ продлевает 10-минутный
+// таймер входа — раньше здесь был sessionStore.touch(), из-за чего каждое
+// "Завершено" визуально сбрасывало обратный отсчёт до 10:00, что и было
+// зафиксировано как нежелательное поведение: таймер должен идти строго от
+// момента входа, независимо от того, сколько машин пользователь успел
+// закрыть за это время.
+async function checkKickAfterFinish() {
   if (activeCarSession) return true;
 
   const session = await window.sessionStore.get();
@@ -316,7 +324,6 @@ async function touchSessionOrKick() {
     console.error('Проверка блокировки не удалась, продолжаем офлайн', err);
   }
 
-  await window.sessionStore.touch();
   return true;
 }
 
@@ -615,8 +622,9 @@ async function finishSession() {
     await window.app.setTerminalMode(false);
     showScreen('main');
     renderActiveSession();
-    // Кик/истечение могли накопиться, пока сессия была активна — проверяем сразу.
-    await touchSessionOrKick();
+    // Кик мог накопиться, пока сессия была активна — проверяем сразу.
+    // Таймер сессии входа НЕ трогаем — он продолжает идти от момента входа.
+    await checkKickAfterFinish();
   } catch (err) {
     status.textContent = 'Не удалось завершить: ' + err.message;
     terminalStatus.textContent = 'Не удалось завершить: ' + err.message;
