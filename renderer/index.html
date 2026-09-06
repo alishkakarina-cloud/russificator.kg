@@ -109,6 +109,7 @@
             <div id="admin-calendar" class="calendar-popover" hidden></div>
           </div>
           <button id="admin-tab-users" class="admin-nav-btn">Пользователи</button>
+          <button id="admin-tab-whitelist" class="admin-nav-btn">Whitelist</button>
         </nav>
       </aside>
 
@@ -118,6 +119,17 @@
         </div>
         <div id="admin-users" hidden>
           <div id="admin-users-list" class="users-table"></div>
+        </div>
+        <div id="admin-whitelist" hidden>
+          <p class="subtitle" style="margin:0 0 14px;">
+            Регистрация возможна только для юзернеймов из этого списка.
+          </p>
+          <div class="whitelist-add-row">
+            <input id="whitelist-input" type="text" placeholder="Telegram-юзернейм (с @ или без)" class="whitelist-input" />
+            <button id="whitelist-add-btn" class="primary-btn whitelist-add-btn">Добавить</button>
+          </div>
+          <p id="whitelist-status" class="status"></p>
+          <div id="whitelist-list" class="whitelist-list"></div>
         </div>
       </section>
     </div>

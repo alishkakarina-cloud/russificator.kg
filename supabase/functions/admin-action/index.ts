@@ -60,6 +60,39 @@ Deno.serve(async (req) => {
       });
     }
 
+    case 'list_whitelist': {
+      const { data, error } = await supabase
+        .from('telegram_username_whitelist')
+        .select('*')
+        .order('added_at', { ascending: false });
+      if (error) return json({ error: error.message }, 500);
+      return json({ usernames: data ?? [] });
+    }
+
+    case 'add_whitelist_username': {
+      if (typeof body.username !== 'string' || !body.username.trim()) {
+        return json({ error: 'username обязателен' }, 400);
+      }
+      // Юзернейм может быть введён с "@" или без — нормализуем в нижний
+      // регистр без "@", ровно так же сверяется в telegram-webhook.
+      const normalized = body.username.trim().replace(/^@/, '').toLowerCase();
+      const { error } = await supabase
+        .from('telegram_username_whitelist')
+        .upsert({ username: normalized, added_by: adminId });
+      if (error) return json({ error: error.message }, 500);
+      return json({ ok: true });
+    }
+
+    case 'remove_whitelist_username': {
+      if (typeof body.username !== 'string' || !body.username.trim()) {
+        return json({ error: 'username обязателен' }, 400);
+      }
+      const normalized = body.username.trim().replace(/^@/, '').toLowerCase();
+      const { error } = await supabase.from('telegram_username_whitelist').delete().eq('username', normalized);
+      if (error) return json({ error: error.message }, 500);
+      return json({ ok: true });
+    }
+
     case 'set_trusted': {
       if (typeof body.targetTelegramId !== 'number' || typeof body.trusted !== 'boolean') {
         return json({ error: 'targetTelegramId и trusted обязательны' }, 400);

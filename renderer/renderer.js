@@ -872,21 +872,20 @@ async function closeAdminPanel() {
 function switchAdminTab(tab) {
   const historyTab = document.getElementById('admin-tab-history');
   const usersTab = document.getElementById('admin-tab-users');
+  const whitelistTab = document.getElementById('admin-tab-whitelist');
   const historySection = document.getElementById('admin-history');
   const usersSection = document.getElementById('admin-users');
+  const whitelistSection = document.getElementById('admin-whitelist');
 
-  if (tab === 'history') {
-    historyTab.classList.add('active');
-    usersTab.classList.remove('active');
-    historySection.hidden = false;
-    usersSection.hidden = true;
-  } else {
-    historyTab.classList.remove('active');
-    usersTab.classList.add('active');
-    historySection.hidden = true;
-    usersSection.hidden = false;
-    loadUsersList();
-  }
+  historyTab.classList.toggle('active', tab === 'history');
+  usersTab.classList.toggle('active', tab === 'users');
+  whitelistTab.classList.toggle('active', tab === 'whitelist');
+  historySection.hidden = tab !== 'history';
+  usersSection.hidden = tab !== 'users';
+  whitelistSection.hidden = tab !== 'whitelist';
+
+  if (tab === 'users') loadUsersList();
+  if (tab === 'whitelist') loadWhitelist();
 }
 
 function renderCalendar() {
@@ -1202,10 +1201,75 @@ function renderUserRow(u, adminToken) {
   return row;
 }
 
+// ------------------------------- Whitelist ------------------------------
+// Регистрация (вход через Telegram) возможна только для юзернеймов из этого
+// списка — проверяется на сервере в telegram-webhook, здесь только
+// управление самим списком.
+
+async function loadWhitelist() {
+  const listEl = document.getElementById('whitelist-list');
+  listEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  const session = await window.sessionStore.get();
+  try {
+    const { usernames } = await adminAction('list_whitelist', { adminToken: session.loginToken });
+    listEl.innerHTML = '';
+    if (!usernames.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty-note';
+      empty.textContent = 'Список пуст — пока никто не сможет зарегистрироваться.';
+      listEl.appendChild(empty);
+      return;
+    }
+    for (const u of usernames) {
+      listEl.appendChild(renderWhitelistRow(u.username, session.loginToken));
+    }
+  } catch (err) {
+    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+  }
+}
+
+function renderWhitelistRow(username, adminToken) {
+  const row = document.createElement('div');
+  row.className = 'whitelist-row';
+  row.innerHTML = `<span>@${username}</span><button class="whitelist-remove-btn">Убрать</button>`;
+  row.querySelector('.whitelist-remove-btn').addEventListener('click', async () => {
+    try {
+      await adminAction('remove_whitelist_username', { adminToken, username });
+      loadWhitelist();
+    } catch (err) {
+      document.getElementById('whitelist-status').textContent = 'Ошибка: ' + err.message;
+    }
+  });
+  return row;
+}
+
+const whitelistInput = document.getElementById('whitelist-input');
+const whitelistStatus = document.getElementById('whitelist-status');
+
+async function addWhitelistUsername() {
+  const value = whitelistInput.value.trim();
+  if (!value) return;
+  whitelistStatus.textContent = '';
+  const session = await window.sessionStore.get();
+  try {
+    await adminAction('add_whitelist_username', { adminToken: session.loginToken, username: value });
+    whitelistInput.value = '';
+    loadWhitelist();
+  } catch (err) {
+    whitelistStatus.textContent = 'Ошибка: ' + err.message;
+  }
+}
+
+document.getElementById('whitelist-add-btn').addEventListener('click', addWhitelistUsername);
+whitelistInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') addWhitelistUsername();
+});
+
 adminOpenBtn.addEventListener('click', openAdminPanel);
 document.getElementById('admin-back-btn').addEventListener('click', closeAdminPanel);
 document.getElementById('admin-tab-history').addEventListener('click', () => switchAdminTab('history'));
 document.getElementById('admin-tab-users').addEventListener('click', () => switchAdminTab('users'));
+document.getElementById('admin-tab-whitelist').addEventListener('click', () => switchAdminTab('whitelist'));
 document.getElementById('date-picker-btn').addEventListener('click', (e) => {
   e.stopPropagation();
   toggleCalendarPopover();

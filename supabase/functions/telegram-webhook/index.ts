@@ -112,6 +112,32 @@ Deno.serve(async (req) => {
       username: from.username ?? null,
     };
 
+    // Whitelist — регистрация возможна только если юзернейм заранее добавлен
+    // администратором. Проверяется раньше, чем блокировка/доверие: не быть
+    // в списке — более фундаментальная причина отказа, чем последующий кик.
+    // У Telegram username может не быть вообще (from.username пуст) —
+    // таких пропустить в принципе нельзя, это тоже явный отказ.
+    const usernameLower = from.username ? from.username.toLowerCase() : null;
+    const { data: allowed } = usernameLower
+      ? await supabase.from('telegram_username_whitelist').select('username').eq('username', usernameLower).maybeSingle()
+      : { data: null };
+
+    if (!allowed) {
+      await supabase
+        .from('telegram_login_tokens')
+        .update({ telegram_user: telegramUserPayload, confirmed_at: new Date().toISOString(), status: 'rejected' })
+        .eq('token', token)
+        .eq('status', 'pending_telegram');
+      await logEvent(from.id, 'login_rejected', { auto: true, reason: 'not_whitelisted' });
+      await tg('sendMessage', {
+        chat_id: from.id,
+        text: usernameLower
+          ? 'Доступ закрыт: ваш Telegram-юзернейм не в списке разрешённых. Обратитесь к администратору.'
+          : 'Доступ закрыт: у вас не установлен юзернейм в Telegram. Установите его в настройках Telegram и обратитесь к администратору.',
+      });
+      return new Response(JSON.stringify({ ok: true }));
+    }
+
     if (blocked) {
       await supabase
         .from('telegram_login_tokens')
