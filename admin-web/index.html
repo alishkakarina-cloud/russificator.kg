@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>russificator.kg — Админка</title>
+<meta name="theme-color" content="#1f6feb" />
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" href="/icons/icon-192.png" />
+<link rel="apple-touch-icon" href="/icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<div id="screen-login" class="screen">
+  <div class="login-card">
+    <h1>russificator.kg</h1>
+    <p class="subtitle">Админ-панель</p>
+    <button id="tg-login-btn" class="primary-btn">Войти через Telegram</button>
+    <p id="login-error" class="error-text"></p>
+  </div>
+</div>
+
+<div id="screen-waiting" class="screen" hidden>
+  <div class="login-card">
+    <div class="spinner"></div>
+    <p id="waiting-text">Ожидание...</p>
+    <a id="tg-open-link" class="secondary-btn" href="#" target="_blank" rel="noopener">Открыть Telegram</a>
+    <button id="cancel-login-btn" class="link-btn">Отмена</button>
+  </div>
+</div>
+
+<div id="screen-rejected" class="screen" hidden>
+  <div class="login-card">
+    <p>Доступ отклонён.</p>
+    <button id="rejected-back-btn" class="secondary-btn">Назад</button>
+  </div>
+</div>
+
+<div id="screen-admin" class="screen" hidden>
+  <header class="admin-header">
+    <span class="admin-title">Админка</span>
+    <button id="logout-btn" class="icon-btn" title="Выйти">Выйти</button>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="users">Пользователи</button>
+    <button class="tab-btn" data-tab="history">История</button>
+  </nav>
+
+  <main id="tab-users" class="tab-content">
+    <div id="users-list" class="list"></div>
+  </main>
+
+  <main id="tab-history" class="tab-content" hidden>
+    <div class="history-controls">
+      <input type="date" id="history-date" />
+    </div>
+    <div id="history-list" class="list"></div>
+  </main>
+</div>
+
+<div id="user-detail-overlay" class="overlay" hidden>
+  <div class="overlay-card">
+    <div class="overlay-header">
+      <span id="user-detail-title"></span>
+      <button id="user-detail-close" class="icon-btn">✕</button>
+    </div>
+    <div id="user-detail-body" class="overlay-body"></div>
+  </div>
+</div>
+
+<script src="/config.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

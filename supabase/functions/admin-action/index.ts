@@ -19,8 +19,18 @@ const ADMIN_CHAT_IDS = [7155433371, 8106761823];
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+// CORS нужен для мобильной веб-админки (admin.russificator.kg) — она вызывает
+// эту функцию из настоящего браузера с настоящим Origin, в отличие от
+// десктопного приложения (там страница грузится с file://, и Chromium её
+// туда не применяет). Без этих заголовков браузер молча блокирует ответ.
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
 function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS } });
 }
 
 async function logEvent(sessionId: string | null, telegramId: number | null, eventType: string, detail?: unknown) {
@@ -38,6 +48,10 @@ async function requireAdmin(adminToken: string): Promise<number | null> {
 }
 
 Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
   const body = await req.json().catch(() => null);
   if (!body?.action || !body?.adminToken) {
     return json({ error: 'action и adminToken обязательны' }, 400);
