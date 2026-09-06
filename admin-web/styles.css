@@ -181,7 +181,10 @@ html, body {
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
-  font-size: 15px;
+  /* iOS Safari автоматически зумит страницу при фокусе на поле с
+     font-size < 16px — после такого зума часть интерфейса визуально
+     "уезжает" за экран, пока пользователь не отожмёт зум руками. */
+  font-size: 16px;
 }
 
 .list {
@@ -210,15 +213,34 @@ html, body {
   gap: 8px;
 }
 
+/* Текстовый блок (имя+подпись) должен сжиматься и переносить длинные слова
+   (например "CHANGAN CS55 PLUS"), а не выталкивать статус-плашку/кнопку
+   оплаты за пределы карточки — без min-width:0 flex-элемент по умолчанию
+   не сжимается меньше содержимого. */
+.card-row-top > div:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
 .card-name {
   font-weight: 600;
   font-size: 15px;
+  overflow-wrap: break-word;
 }
 
 .card-sub {
   color: var(--muted);
   font-size: 13px;
   margin-top: 2px;
+  overflow-wrap: break-word;
+}
+
+/* Статус справа (badge/кнопка оплаты) — фиксированного размера, не должен
+   переноситься на две строки и деформироваться. */
+.card-row-top > .badge,
+.card-row-top > .paid-toggle-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .online-dot {
@@ -377,12 +399,14 @@ html, body {
 
 .chat-input-row input {
   flex: 1;
+  min-width: 0;
   padding: 10px;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
-  font-size: 15px;
+  /* См. комментарий у #history-date — тот же iOS-зум-баг. */
+  font-size: 16px;
 }
 
 .chat-input-row .primary-btn {
