@@ -256,6 +256,11 @@ h1 {
   position: relative;
 }
 
+#car-dropdown-btn {
+  position: relative;
+  top: -1px;
+}
+
 .dropdown-list {
   position: absolute;
   left: 0;

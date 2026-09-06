@@ -131,8 +131,28 @@ window.automaxkg.onDownloadProgress(({ done, total }) => {
 // список файлов с приватного хранилища и подписанные ссылки на скачивание
 // выдаёт automaxkg-manifest, доступ к которой есть только у вошедшего и
 // одобренного пользователя (проверяется на сервере по loginToken).
+// deviceId — стабильный случайный идентификатор ЭТОГО компьютера (хранится
+// в main.js через electron-store, не привязан к логину) — сервер выводит из
+// него свой ключ шифрования для этого устройства (automaxkg-key), поэтому
+// у каждого устройства свой ключ, а не один общий на всех.
+let cachedDeviceId = null;
+async function getCachedDeviceId() {
+  if (!cachedDeviceId) cachedDeviceId = await window.automaxkg.getDeviceId();
+  return cachedDeviceId;
+}
+
+// Ключ шифрования никогда не хранится на диске — запрашивается заново с
+// сервера каждый раз, когда реально нужен (первое скачивание/шифрование на
+// месте/расшифровка перед запуском). Сервер сам проверяет, что loginToken
+// сейчас approved и не кикнут — см. automaxkg-key.
+async function fetchEncryptionKey(loginToken) {
+  const deviceId = await getCachedDeviceId();
+  const { key } = await callFunction('automaxkg-key', { loginToken, deviceId });
+  return key;
+}
+
 async function ensureAutomaxKgReady(loginToken) {
-  const { available } = await window.automaxkg.status();
+  const { available, needsEncryption } = await window.automaxkg.status();
   if (available) return true;
 
   pendingLoginToken = loginToken;
@@ -140,17 +160,28 @@ async function ensureAutomaxKgReady(loginToken) {
   downloadErrorEl.hidden = true;
   downloadRetryBtn.hidden = true;
   downloadProgressFill.style.width = '0%';
-  downloadProgressText.textContent = 'Подготовка списка файлов...';
 
   try {
+    if (needsEncryption) {
+      // Файлы уже были скачаны раньше, до появления шифрования — шифруем их
+      // на месте, без повторного скачивания ~3ГБ с нуля.
+      downloadProgressText.textContent = 'Защищаем файлы на диске (один раз)...';
+      const key = await fetchEncryptionKey(loginToken);
+      const result = await window.automaxkg.encryptExisting(key);
+      if (!result.ok) throw new Error(result.error);
+      return true;
+    }
+
+    downloadProgressText.textContent = 'Подготовка списка файлов...';
     const { files } = await callFunction('automaxkg-manifest', { loginToken });
     downloadProgressText.textContent = `Скачано 0 из ${files.length} файлов (0%)`;
-    const result = await window.automaxkg.download(files);
+    const key = await fetchEncryptionKey(loginToken);
+    const result = await window.automaxkg.download(files, key);
     if (!result.ok) throw new Error(result.error);
     return true;
   } catch (err) {
     downloadErrorEl.hidden = false;
-    downloadErrorEl.textContent = 'Ошибка скачивания: ' + err.message;
+    downloadErrorEl.textContent = 'Ошибка: ' + err.message;
     downloadRetryBtn.hidden = false;
     return false;
   }
@@ -387,7 +418,24 @@ async function enterTerminalScreen(carSess, loginToken) {
   term.onData((data) => window.automaxkg.sendInput(data));
   window.addEventListener('resize', handleTerminalResize);
 
-  const result = await window.automaxkg.startTerminal(term.cols, term.rows);
+  // Ключ запрашивается заново перед КАЖДЫМ запуском (не переиспользуем
+  // старый) — сервер каждый раз заново проверяет, что сессия всё ещё
+  // approved и пользователь не кикнут, прежде чем его выдать. Затем main.js
+  // расшифровывает файлы во временную рабочую копию — это занимает
+  // заметное время (~20 сек на 3ГБ на обычном SSD), поэтому явно показываем
+  // статус, а не оставляем пустой экран.
+  terminalStatus.textContent = 'Подготовка AUTOMAX KG...';
+  let key;
+  try {
+    key = await fetchEncryptionKey(loginToken);
+  } catch (err) {
+    term.write(`\r\n[Не удалось получить ключ доступа: ${err.message}]\r\n`);
+    terminalStatus.textContent = 'Не удалось получить ключ доступа: ' + err.message;
+    return;
+  }
+
+  const result = await window.automaxkg.startTerminal(term.cols, term.rows, key);
+  terminalStatus.textContent = '';
   if (!result.ok) {
     term.write(`\r\n[Ошибка запуска AUTOMAX KG: ${result.error}]\r\n`);
     terminalStatus.textContent = 'Не удалось запустить AUTOMAX KG: ' + result.error;

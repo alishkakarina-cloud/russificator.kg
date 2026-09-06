@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const https = require('https');
 const { execFileSync } = require('child_process');
 const pty = require('node-pty');
@@ -51,9 +52,221 @@ const sessionStore = new Store({ name: 'session', clearInvalidConfig: true });
 // automaxkg-status/automaxkg-download ниже.
 const AUTOMAXKG_DIR = path.join(app.getPath('userData'), 'runtime-data');
 const AUTOMAXKG_BAT_PATH = path.join(AUTOMAXKG_DIR, '@AUTOMAXKG) .bat');
+const AUTOMAXKG_ENCRYPTED_MARKER = path.join(AUTOMAXKG_DIR, '.encrypted');
+// Место докачки — файлы приходят сюда в открытом виде (как раньше), потом
+// шифруются В AUTOMAXKG_DIR, а эта папка удаляется. Расшифрованная рабочая
+// копия для реального запуска — отдельная, третья папка, живёт только на
+// время активной сессии.
+const AUTOMAXKG_STAGING_DIR = path.join(app.getPath('userData'), 'runtime-data-staging');
+const AUTOMAXKG_DECRYPTED_DIR = path.join(app.getPath('userData'), 'runtime-data-decrypted');
+const AUTOMAXKG_DECRYPTED_BAT_PATH = path.join(AUTOMAXKG_DECRYPTED_DIR, '@AUTOMAXKG) .bat');
 
 function isAutomaxKgPresent() {
   return fs.existsSync(AUTOMAXKG_BAT_PATH);
+}
+
+function isAutomaxKgEncrypted() {
+  return fs.existsSync(AUTOMAXKG_ENCRYPTED_MARKER);
+}
+
+// deviceId — случайный идентификатор этого конкретного компьютера,
+// сгенерированный один раз при первом запуске. Не секрет сам по себе (это
+// как логин устройства, не пароль) — используется сервером (automaxkg-key)
+// для вывода СВОЕГО ключа шифрования для каждого устройства отдельно.
+const deviceStore = new Store({ name: 'device' });
+function getDeviceId() {
+  let id = deviceStore.get('deviceId');
+  if (!id) {
+    id = crypto.randomUUID();
+    deviceStore.set('deviceId', id);
+  }
+  return id;
+}
+
+// ---- Шифрование файлов AUTOMAX KG в состоянии покоя на диске (AES-256-GCM) ----
+// Ключ никогда не хранится на диске клиента — только в памяти, на время
+// самой операции шифрования/расшифровки, и всегда получен только что от
+// сервера (см. renderer.js: automaxkg-key). Формат файла на диске:
+// [12 байт IV][зашифрованные данные][16 байт тег аутентификации GCM] —
+// тег в конце позволяет обнаружить порчу/подмену файла при расшифровке
+// (GCM не расшифрует молча повреждённые данные, а явно выдаст ошибку).
+
+function keyHexToBuffer(keyHex) {
+  const buf = Buffer.from(keyHex, 'hex');
+  if (buf.length !== 32) throw new Error('Неверная длина ключа шифрования');
+  return buf;
+}
+
+function encryptFile(srcPath, destPath, keyBuf) {
+  return new Promise((resolve, reject) => {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', keyBuf, iv);
+    const input = fs.createReadStream(srcPath);
+    const output = fs.createWriteStream(destPath);
+
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      output.destroy();
+      fs.rm(destPath, { force: true }, () => {});
+      reject(err);
+    };
+
+    input.on('error', fail);
+    cipher.on('error', fail);
+    output.on('error', fail);
+
+    output.write(iv);
+    input.pipe(cipher).pipe(output, { end: false });
+    cipher.on('end', () => {
+      if (settled) return;
+      try {
+        output.end(cipher.getAuthTag(), () => {
+          settled = true;
+          resolve();
+        });
+      } catch (err) {
+        fail(err);
+      }
+    });
+  });
+}
+
+function decryptFile(srcPath, destPath, keyBuf) {
+  return new Promise((resolve, reject) => {
+    let fd;
+    try {
+      fd = fs.openSync(srcPath, 'r');
+      const size = fs.fstatSync(fd).size;
+      if (size < 12 + 16) throw new Error(`Файл повреждён (слишком мал): ${srcPath}`);
+
+      const iv = Buffer.alloc(12);
+      fs.readSync(fd, iv, 0, 12, 0);
+      const tag = Buffer.alloc(16);
+      fs.readSync(fd, tag, 0, 16, size - 16);
+      fs.closeSync(fd);
+      fd = null;
+
+      const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuf, iv);
+      decipher.setAuthTag(tag);
+
+      const input = fs.createReadStream(srcPath, { start: 12, end: size - 16 - 1 });
+      const output = fs.createWriteStream(destPath);
+
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        output.destroy();
+        fs.rm(destPath, { force: true }, () => {});
+        reject(err);
+      };
+
+      input.on('error', fail);
+      decipher.on('error', fail);
+      output.on('error', fail);
+      output.on('finish', () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      });
+
+      input.pipe(decipher).pipe(output);
+    } catch (err) {
+      if (fd !== null && fd !== undefined) {
+        try {
+          fs.closeSync(fd);
+        } catch {}
+      }
+      reject(err);
+    }
+  });
+}
+
+// Шифрование/расшифровка ~3ГБ данных по одному файлу упирается в диск
+// (проверено: 6 параллельных файлов дают почти двукратное ускорение, 12 —
+// уже без выигрыша, диск — узкое место, не процессор). CONCURRENCY=6 —
+// разумный баланс, без него полная расшифровка перед каждым запуском заняла
+// бы вдвое дольше.
+const CRYPTO_CONCURRENCY = 6;
+
+async function runPool(items, worker, concurrency) {
+  const queue = [...items];
+  async function run() {
+    while (queue.length) {
+      const item = queue.shift();
+      await worker(item);
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, run));
+}
+
+// Рекурсивно перечисляет все файлы (не папки) в dir, относительные пути.
+function walkFiles(dir) {
+  const results = [];
+  function walk(current) {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else results.push(path.relative(dir, full));
+    }
+  }
+  walk(dir);
+  return results;
+}
+
+// Шифрует все файлы из srcDir в destDir (сохраняя относительные пути), затем
+// удаляет srcDir целиком. Используется и для первой докачки (srcDir —
+// временная папка со свежескачанными файлами), и не используется напрямую
+// для миграции уже существующей на диске открытой копии — там нужно шифровать
+// "на месте", см. encryptInPlace ниже.
+async function encryptDirInto(srcDir, destDir, keyBuf) {
+  const files = walkFiles(srcDir);
+  fs.mkdirSync(destDir, { recursive: true });
+  await runPool(files, async (rel) => {
+    const destPath = path.join(destDir, rel);
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    await encryptFile(path.join(srcDir, rel), destPath, keyBuf);
+  }, CRYPTO_CONCURRENCY);
+  fs.rmSync(srcDir, { recursive: true, force: true });
+}
+
+// Миграция уже скачанной РАНЕЕ (до появления шифрования) открытой копии —
+// шифрует каждый файл во временный файл рядом, затем подменяет оригинал.
+// Не требует повторного скачивания 3ГБ с сервера.
+async function encryptInPlace(dir, keyBuf) {
+  const files = walkFiles(dir);
+  await runPool(files, async (rel) => {
+    const original = path.join(dir, rel);
+    const tmp = original + '.enc.tmp';
+    await encryptFile(original, tmp, keyBuf);
+    fs.rmSync(original, { force: true });
+    fs.renameSync(tmp, original);
+  }, CRYPTO_CONCURRENCY);
+  fs.writeFileSync(AUTOMAXKG_ENCRYPTED_MARKER, '');
+}
+
+// Расшифровывает AUTOMAXKG_DIR в AUTOMAXKG_DECRYPTED_DIR (используется прямо
+// перед запуском). Если расшифрованная копия от предыдущего запуска не была
+// убрана (например приложение упало) — сначала подчищаем её.
+async function decryptForLaunch(keyBuf) {
+  fs.rmSync(AUTOMAXKG_DECRYPTED_DIR, { recursive: true, force: true });
+  const files = walkFiles(AUTOMAXKG_DIR).filter((f) => f !== '.encrypted');
+  fs.mkdirSync(AUTOMAXKG_DECRYPTED_DIR, { recursive: true });
+  await runPool(files, async (rel) => {
+    const destPath = path.join(AUTOMAXKG_DECRYPTED_DIR, rel);
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    await decryptFile(path.join(AUTOMAXKG_DIR, rel), destPath, keyBuf);
+  }, CRYPTO_CONCURRENCY);
+}
+
+function cleanupDecryptedCopy() {
+  try {
+    fs.rmSync(AUTOMAXKG_DECRYPTED_DIR, { recursive: true, force: true });
+  } catch (err) {
+    console.error('Не удалось удалить расшифрованную временную копию AUTOMAX KG', err);
+  }
 }
 
 // Единственный источник AUTOMAX KG теперь — облачная докачка через Supabase
@@ -128,6 +341,10 @@ function killActivePty() {
     }
     activePty = null;
   }
+  // Расшифрованная копия существует только на время активной работы —
+  // как только процесс завершён (сам или принудительно), убираем её сразу,
+  // не оставляя открытые файлы на диске дольше, чем реально нужно.
+  cleanupDecryptedCopy();
 }
 
 // Скачивает один файл по прямой (подписанной) ссылке в destPath, следуя
@@ -282,12 +499,23 @@ function createWindow() {
 // вместо отдельного окна ОС. cwd выставляем явно в AUTOMAXKG_DIR — раньше
 // рабочую директорию выставляла сама ОС по местоположению файла (как при
 // двойном клике), здесь мы её задаём напрямую тем же результатом.
-ipcMain.handle('automaxkg-terminal-start', (event, { cols, rows }) => {
+// Перед каждым запуском файлы расшифровываются заново из AUTOMAXKG_DIR (где
+// они лежат зашифрованными постоянно) во временную AUTOMAXKG_DECRYPTED_DIR —
+// именно из неё и запускается AUTOMAX KG. key передаётся сюда уже полученным
+// от automaxkg-key (свежий запрос на каждый запуск, не переиспользуем старый).
+ipcMain.handle('automaxkg-terminal-start', async (event, { cols, rows, key }) => {
   if (activePty) {
     return { ok: false, error: 'AUTOMAX KG уже запущена' };
   }
   if (!isAutomaxKgPresent()) {
     return { ok: false, error: 'Файлы AUTOMAX KG не найдены на этом компьютере' };
+  }
+
+  try {
+    await decryptForLaunch(keyHexToBuffer(key));
+  } catch (err) {
+    cleanupDecryptedCopy();
+    return { ok: false, error: `Не удалось расшифровать файлы: ${err.message}` };
   }
 
   try {
@@ -300,15 +528,16 @@ ipcMain.handle('automaxkg-terminal-start', (event, { cols, rows }) => {
     // аргументов, иначе node-pty заново заэкранирует уже готовые кавычки).
     // Проверено вручную на реальном файле AUTOMAX KG — без этого запуск
     // падает с "не является внутренней или внешней командой".
-    activePty = pty.spawn('cmd.exe', `/d /s /c ""${AUTOMAXKG_BAT_PATH}""`, {
+    activePty = pty.spawn('cmd.exe', `/d /s /c ""${AUTOMAXKG_DECRYPTED_BAT_PATH}""`, {
       name: 'xterm-256color',
       cols: cols > 0 ? cols : 80,
       rows: rows > 0 ? rows : 30,
-      cwd: AUTOMAXKG_DIR,
+      cwd: AUTOMAXKG_DECRYPTED_DIR,
       env: process.env,
     });
   } catch (err) {
     activePty = null;
+    cleanupDecryptedCopy();
     return { ok: false, error: err.message };
   }
 
@@ -318,6 +547,7 @@ ipcMain.handle('automaxkg-terminal-start', (event, { cols, rows }) => {
   });
   activePty.onExit(({ exitCode }) => {
     activePty = null;
+    cleanupDecryptedCopy();
     if (!sender.isDestroyed()) sender.send('automaxkg-terminal-exit', { exitCode });
   });
 
@@ -350,7 +580,17 @@ ipcMain.handle('automaxkg-terminal-kill', () => {
   return { ok: true };
 });
 
-ipcMain.handle('automaxkg-status', () => ({ available: isAutomaxKgPresent() }));
+ipcMain.handle('get-device-id', () => getDeviceId());
+
+ipcMain.handle('automaxkg-status', () => {
+  const present = isAutomaxKgPresent();
+  return {
+    available: present && isAutomaxKgEncrypted(),
+    // Файлы уже скачаны, но остались от версии программы до появления
+    // шифрования — нужно зашифровать на месте, а не качать заново 3ГБ.
+    needsEncryption: present && !isAutomaxKgEncrypted(),
+  };
+});
 
 // Разовое уведомление для интерфейса о том, что при старте были найдены и
 // удалены старые независимые копии AUTOMAX KG — renderer запрашивает это
@@ -364,13 +604,19 @@ ipcMain.handle('automaxkg-cleanup-result', () => orphanedCleanupResult);
 // проверяет, что пользователь вошёл и одобрен — здесь мы просто скачиваем
 // то, что было выдано, без повторной проверки прав (это не точка входа
 // для произвольных URL с фронтенда, ссылки всегда только от нашей функции).
-ipcMain.handle('automaxkg-download', async (event, { files }) => {
-  fs.mkdirSync(AUTOMAXKG_DIR, { recursive: true });
+// Качает файлы во временную STAGING-папку в открытом виде (как раньше),
+// затем шифрует их в рабочую AUTOMAXKG_DIR и убирает staging целиком — на
+// диске в итоге остаётся только зашифрованная копия, ключ (key, hex-строка)
+// передаётся сюда уже полученным от automaxkg-key и живёт только в памяти
+// на время этого вызова.
+ipcMain.handle('automaxkg-download', async (event, { files, key }) => {
+  fs.rmSync(AUTOMAXKG_STAGING_DIR, { recursive: true, force: true });
+  fs.mkdirSync(AUTOMAXKG_STAGING_DIR, { recursive: true });
   const total = files.length;
   let done = 0;
 
   for (const f of files) {
-    const destPath = path.join(AUTOMAXKG_DIR, ...f.path.split('/'));
+    const destPath = path.join(AUTOMAXKG_STAGING_DIR, ...f.path.split('/'));
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
     let lastErr = null;
@@ -404,9 +650,17 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
   }
 
   try {
-    reassembleParts(AUTOMAXKG_DIR);
+    reassembleParts(AUTOMAXKG_STAGING_DIR);
   } catch (err) {
     return { ok: false, error: err.message };
+  }
+
+  try {
+    fs.rmSync(AUTOMAXKG_DIR, { recursive: true, force: true });
+    await encryptDirInto(AUTOMAXKG_STAGING_DIR, AUTOMAXKG_DIR, keyHexToBuffer(key));
+    fs.writeFileSync(AUTOMAXKG_ENCRYPTED_MARKER, '');
+  } catch (err) {
+    return { ok: false, error: `Не удалось зашифровать файлы: ${err.message}` };
   }
 
   try {
@@ -416,6 +670,17 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
   }
 
   return { ok: true };
+});
+
+// Миграция: файлы AUTOMAX KG уже есть на диске в ОТКРЫТОМ виде (скачаны до
+// появления шифрования) — шифруем на месте, без повторного скачивания 3ГБ.
+ipcMain.handle('automaxkg-encrypt-existing', async (_event, { key }) => {
+  try {
+    await encryptInPlace(AUTOMAXKG_DIR, keyHexToBuffer(key));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 ipcMain.handle('open-external', async (_event, url) => {
