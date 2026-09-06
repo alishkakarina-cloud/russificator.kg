@@ -191,15 +191,35 @@ function decryptFile(srcPath, destPath, keyBuf) {
 // бы вдвое дольше.
 const CRYPTO_CONCURRENCY = 6;
 
+// Если один воркер бросает исключение, Promise.all реджектится немедленно,
+// но ОСТАЛЬНЫЕ уже запущенные воркеры при этом не отменяются — они
+// продолжают работать в фоне уже ПОСЛЕ того, как вызывающий код (например,
+// повторная попытка после сбоя) продолжил выполнение. Для encryptInPlace
+// это означало реальную гонку: "осиротевший" воркер от первой попытки мог
+// дописывать/переименовывать файл ровно в тот момент, когда пользователь
+// нажимал "Повторить" и запускал шифрование той же директории заново —
+// именно так на практике возникали побитые файлы вида "*.enc.tmp.enc.tmp".
+// Поэтому здесь каждый воркер сам ловит свою ошибку и просто перестаёт
+// брать новые задачи — Promise.all гарантированно дожидается ЗАВЕРШЕНИЯ
+// всех воркеров (успешного или нет), и только после этого функция бросает
+// первую пойманную ошибку. К моменту, когда caller видит исключение, в
+// директории не остаётся никаких фоновых операций.
 async function runPool(items, worker, concurrency) {
   const queue = [...items];
+  let firstError = null;
   async function run() {
-    while (queue.length) {
+    while (queue.length && !firstError) {
       const item = queue.shift();
-      await worker(item);
+      try {
+        await worker(item);
+      } catch (err) {
+        if (!firstError) firstError = err;
+        return;
+      }
     }
   }
   await Promise.all(Array.from({ length: concurrency }, run));
+  if (firstError) throw firstError;
 }
 
 // Рекурсивно перечисляет все файлы (не папки) в dir, относительные пути.
@@ -232,19 +252,96 @@ async function encryptDirInto(srcDir, destDir, keyBuf) {
   fs.rmSync(srcDir, { recursive: true, force: true });
 }
 
+// На Windows fs.renameSync(tmp, original) иногда падает с кратковременным
+// EPERM сразу после того, как output-поток шифрования сообщил о завершении
+// записи — обычно это антивирус ещё держит файл на сканирование долю
+// секунды. Раньше это было фатально (см. recoverLeftoverEncTmp ниже — из-за
+// чего именно) — несколько попыток с паузой почти всегда решают проблему
+// без участия пользователя.
+async function renameWithRetry(from, to, attempts = 5) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (err) {
+      if (i === attempts - 1) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 150 * (i + 1)));
+    }
+  }
+}
+
+// Приводит папку в консистентное состояние после прерванной ПРЕДЫДУЩЕЙ
+// попытки encryptInPlace (например упавшей на renameSync — раньше оригинал
+// удалялся ДО переименования временного файла обратно, и при сбое rename
+// файл терялся под именем "*.enc.tmp", а следующая попытка находила его
+// через walkFiles и шифровала ПОВТОРНО — отсюда "*.enc.tmp.enc.tmp.enc.tmp"
+// на скриншоте пользователя). Если оригинал ещё существует — .enc.tmp это
+// просто мусор от прерванной попытки, шифрование повторится с нуля. Если
+// оригинала уже нет — .enc.tmp это единственная сохранившаяся копия файла,
+// просто застрявшая под временным именем, и её нужно восстановить, а не
+// шифровать заново (что превратило бы уже зашифрованные данные в мусор).
+function recoverLeftoverEncTmp(dir) {
+  for (const rel of walkFiles(dir)) {
+    if (!rel.endsWith('.enc.tmp')) continue;
+    const tmpPath = path.join(dir, rel);
+    const originalPath = tmpPath.slice(0, -'.enc.tmp'.length);
+    if (fs.existsSync(originalPath)) {
+      fs.rmSync(tmpPath, { force: true });
+    } else {
+      fs.renameSync(tmpPath, originalPath);
+    }
+  }
+}
+
+// Если попытка шифрования упала на одном файле, к моменту, когда об этом
+// узнаёт caller, несколько ДРУГИХ файлов (до CRYPTO_CONCURRENCY штук) уже
+// могли успешно зашифроваться параллельно — сам файл на диске после этого
+// ничем не отличается от ещё не тронутого (то же имя, то же место), и без
+// отдельной отметки следующий запуск зашифровал бы его ПОВТОРНО поверх уже
+// зашифрованных данных, необратимо испортив файл. Список путей, для которых
+// шифрование гарантированно завершено (успешный rename), хранится отдельно
+// и удаляется целиком только когда весь каталог обработан до конца.
+const ENCRYPT_PROGRESS_FILE = '.encrypt-progress.json';
+
+function loadEncryptProgress(dir) {
+  try {
+    return new Set(JSON.parse(fs.readFileSync(path.join(dir, ENCRYPT_PROGRESS_FILE), 'utf8')));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveEncryptProgress(dir, doneSet) {
+  fs.writeFileSync(path.join(dir, ENCRYPT_PROGRESS_FILE), JSON.stringify([...doneSet]));
+}
+
 // Миграция уже скачанной РАНЕЕ (до появления шифрования) открытой копии —
 // шифрует каждый файл во временный файл рядом, затем подменяет оригинал.
 // Не требует повторного скачивания 3ГБ с сервера.
 async function encryptInPlace(dir, keyBuf) {
-  const files = walkFiles(dir);
+  recoverLeftoverEncTmp(dir);
+  const done = loadEncryptProgress(dir);
+  const files = walkFiles(dir).filter(
+    (rel) => !rel.endsWith('.enc.tmp') && rel !== ENCRYPT_PROGRESS_FILE && !done.has(rel)
+  );
   await runPool(files, async (rel) => {
     const original = path.join(dir, rel);
     const tmp = original + '.enc.tmp';
     await encryptFile(original, tmp, keyBuf);
-    fs.rmSync(original, { force: true });
-    fs.renameSync(tmp, original);
+    // Оригинал больше НЕ удаляется заранее — fs.renameSync на Windows сам
+    // атомарно заменяет существующий целевой файл (MoveFileEx с
+    // MOVEFILE_REPLACE_EXISTING), так что нет момента, когда файл отсутствует
+    // под обоими именами одновременно, даже если rename с первой попытки
+    // не удался.
+    await renameWithRetry(tmp, original);
+    // Синхронный блок между await'ами — event loop однопоточный, конкурентные
+    // воркеры не могут прервать этот участок, поэтому Set + запись файла
+    // остаются согласованными без явной блокировки.
+    done.add(rel);
+    saveEncryptProgress(dir, done);
   }, CRYPTO_CONCURRENCY);
   fs.writeFileSync(AUTOMAXKG_ENCRYPTED_MARKER, '');
+  fs.rmSync(path.join(dir, ENCRYPT_PROGRESS_FILE), { force: true });
 }
 
 // Расшифровывает AUTOMAXKG_DIR в AUTOMAXKG_DECRYPTED_DIR (используется прямо
