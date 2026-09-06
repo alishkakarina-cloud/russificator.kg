@@ -93,6 +93,18 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    case 'list_login_history': {
+      if (typeof body.targetTelegramId !== 'number') return json({ error: 'targetTelegramId обязателен' }, 400);
+      const { data, error } = await supabase
+        .from('login_history')
+        .select('*')
+        .eq('telegram_id', body.targetTelegramId)
+        .order('created_at', { ascending: false })
+        .limit(10);
+      if (error) return json({ error: error.message }, 500);
+      return json({ logins: data ?? [] });
+    }
+
     case 'set_trusted': {
       if (typeof body.targetTelegramId !== 'number' || typeof body.trusted !== 'boolean') {
         return json({ error: 'targetTelegramId и trusted обязательны' }, 400);

@@ -210,6 +210,16 @@ async function enterMainScreen(telegramId, loginToken) {
     } catch (err) {
       console.error('Не удалось сохранить локальную сессию', err);
     }
+
+    // Запись входа (город по IP + устройство) — один раз именно здесь,
+    // при НОВОМ входе, а не при каждом resume уже открытой локальной
+    // сессии (см. tryLocalSession — там этот вызов намеренно отсутствует).
+    try {
+      const device = await window.app.getDeviceInfo();
+      await callFunction('record-login', { loginToken, device });
+    } catch (err) {
+      console.error('Не удалось записать вход в историю', err);
+    }
   }
   if (!(await ensureAutomaxKgReady(loginToken))) return;
   showScreen('main');
@@ -1258,6 +1268,39 @@ async function openSessionDetail(s, name, adminToken) {
   }
 }
 
+// Переиспользует тот же оверлей, что и детали сессии (session-detail-*) —
+// показывает последние входы: город/страна по IP, сам IP, устройство.
+async function openLoginHistory(u, name, adminToken) {
+  const overlay = document.getElementById('session-detail-overlay');
+  const title = document.getElementById('session-detail-title');
+  const list = document.getElementById('session-detail-events');
+  title.textContent = `${name} — история входов`;
+  list.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  overlay.hidden = false;
+
+  try {
+    const { logins } = await adminAction('list_login_history', { adminToken, targetTelegramId: u.telegram_id });
+    if (!logins.length) {
+      list.innerHTML = '<p class="empty-note">Входов не зафиксировано.</p>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const l of logins) {
+      const row = document.createElement('div');
+      row.className = 'event-row';
+      const place = [l.city, l.country].filter(Boolean).join(', ') || 'город неизвестен';
+      row.innerHTML = `
+        <div class="event-time">${fmtDate(l.created_at)} ${fmtOnlyTime(l.created_at)}</div>
+        <div class="event-label">${place}</div>
+        <div class="event-detail">${l.ip ?? ''}${l.device ? ' · ' + l.device : ''}</div>
+      `;
+      list.appendChild(row);
+    }
+  } catch (err) {
+    list.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+  }
+}
+
 document.getElementById('session-detail-close').addEventListener('click', () => {
   document.getElementById('session-detail-overlay').hidden = true;
 });
@@ -1307,7 +1350,7 @@ async function loadUsersList() {
 function renderUsersHeader() {
   const header = document.createElement('div');
   header.className = 'user-header-row';
-  header.innerHTML = `<div>Пользователь</div><div>Доверенный</div><div>Доступ</div>`;
+  header.innerHTML = `<div>Пользователь</div><div>Доверенный</div><div>Доступ</div><div></div>`;
   return header;
 }
 
@@ -1319,7 +1362,10 @@ function renderUserRow(u, adminToken) {
     <div class="col-name">${name}${u.username ? `<span class="username">@${u.username}</span>` : ''}</div>
     <button class="trusted-toggle-btn ${u.trusted ? 'on' : ''}">Доверенный</button>
     <button class="kick-toggle-btn ${u.blocked ? 'blocked' : ''}">${u.blocked ? 'Восстановить' : 'Кикнуть'}</button>
+    <button class="history-btn">История</button>
   `;
+
+  row.querySelector('.history-btn').addEventListener('click', () => openLoginHistory(u, name, adminToken));
 
   row.querySelector('.trusted-toggle-btn').addEventListener('click', async (e) => {
     const btn = e.currentTarget;

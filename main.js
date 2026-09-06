@@ -712,6 +712,8 @@ ipcMain.handle('session-touch', () => {
 
 ipcMain.handle('get-app-version', () => app.getVersion());
 
+ipcMain.handle('get-device-info', () => `${os.type()} ${os.release()} (${os.arch()})`);
+
 ipcMain.handle('set-admin-mode', (_event, isAdmin) => {
   if (!mainWindow) return;
   const size = isAdmin ? ADMIN_SIZE : MAIN_SIZE;

@@ -695,7 +695,7 @@ h1 {
 .user-header-row,
 .user-row {
   display: grid;
-  grid-template-columns: 1.5fr 0.6fr 0.6fr;
+  grid-template-columns: 1.5fr 0.6fr 0.6fr 0.6fr;
   align-items: center;
   gap: 14px;
   padding: 11px 16px;
@@ -739,7 +739,8 @@ h1 {
 }
 
 .trusted-toggle-btn,
-.kick-toggle-btn {
+.kick-toggle-btn,
+.history-btn {
   padding: 6px 10px;
   font-size: 12px;
   font-weight: 600;
