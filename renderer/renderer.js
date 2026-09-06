@@ -19,6 +19,7 @@ const screens = {
   downloading: document.getElementById('screen-downloading'),
   main: document.getElementById('screen-main'),
   terminal: document.getElementById('screen-terminal'),
+  support: document.getElementById('screen-support'),
   admin: document.getElementById('screen-admin'),
 };
 const waitingText = document.getElementById('waiting-text');
@@ -1133,19 +1134,24 @@ function switchAdminTab(tab) {
   const historyTab = document.getElementById('admin-tab-history');
   const usersTab = document.getElementById('admin-tab-users');
   const whitelistTab = document.getElementById('admin-tab-whitelist');
+  const chatTab = document.getElementById('admin-tab-chat');
   const historySection = document.getElementById('admin-history');
   const usersSection = document.getElementById('admin-users');
   const whitelistSection = document.getElementById('admin-whitelist');
+  const chatSection = document.getElementById('admin-chat');
 
   historyTab.classList.toggle('active', tab === 'history');
   usersTab.classList.toggle('active', tab === 'users');
   whitelistTab.classList.toggle('active', tab === 'whitelist');
+  chatTab.classList.toggle('active', tab === 'chat');
   historySection.hidden = tab !== 'history';
   usersSection.hidden = tab !== 'users';
   whitelistSection.hidden = tab !== 'whitelist';
+  chatSection.hidden = tab !== 'chat';
 
   if (tab === 'users') loadUsersList();
   if (tab === 'whitelist') loadWhitelist();
+  if (tab === 'chat') loadChatThreads();
 }
 
 function renderCalendar() {
@@ -1577,11 +1583,200 @@ whitelistInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') addWhitelistUsername();
 });
 
+// ------------------------- "Написать администратору" (Блок 7) -------------------------
+// Пользовательская сторона переписки. Поллинг идёт, только пока сам экран
+// переписки открыт — уведомлять пользователя о новом ответе, пока он занят
+// чем-то другим в приложении, задача не требовала (админ и так узнаёт о
+// новом сообщении через уведомление в Telegram-боте, см. support-message).
+
+let supportPollTimer = null;
+const SUPPORT_POLL_INTERVAL_MS = 5000;
+
+function stopSupportPoll() {
+  if (supportPollTimer) {
+    clearInterval(supportPollTimer);
+    supportPollTimer = null;
+  }
+}
+
+function startSupportPoll() {
+  stopSupportPoll();
+  supportPollTimer = setInterval(loadSupportMessages, SUPPORT_POLL_INTERVAL_MS);
+}
+
+async function openSupportChat() {
+  document.getElementById('support-status').textContent = '';
+  showScreen('support');
+  await loadSupportMessages();
+  startSupportPoll();
+}
+
+function closeSupportChat() {
+  stopSupportPoll();
+  showScreen('main');
+}
+
+async function loadSupportMessages() {
+  const session = await window.sessionStore.get();
+  if (!session) return;
+  try {
+    const { messages } = await callFunction('support-message', { action: 'list', loginToken: session.loginToken });
+    renderSupportMessages(messages);
+  } catch (err) {
+    document.getElementById('support-status').textContent = 'Ошибка загрузки: ' + err.message;
+  }
+}
+
+function renderSupportMessages(messages) {
+  const container = document.getElementById('support-messages');
+  container.innerHTML = '';
+  if (!messages.length) {
+    container.innerHTML = '<p class="empty-note">Сообщений пока нет — напишите администратору, если есть вопрос.</p>';
+    return;
+  }
+  for (const m of messages) {
+    const row = document.createElement('div');
+    row.className = `support-message ${m.sender_role === 'admin' ? 'from-admin' : 'from-user'}`;
+    const textEl = document.createElement('div');
+    textEl.className = 'support-message-text';
+    textEl.textContent = m.text;
+    const timeEl = document.createElement('div');
+    timeEl.className = 'support-message-time';
+    timeEl.textContent = `${fmtDate(m.created_at)} ${fmtOnlyTime(m.created_at)}`;
+    row.appendChild(textEl);
+    row.appendChild(timeEl);
+    container.appendChild(row);
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendSupportMessage() {
+  const input = document.getElementById('support-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const session = await window.sessionStore.get();
+  if (!session) return;
+  const btn = document.getElementById('support-send-btn');
+  btn.disabled = true;
+  try {
+    await callFunction('support-message', { action: 'send', loginToken: session.loginToken, text });
+    input.value = '';
+    await loadSupportMessages();
+  } catch (err) {
+    document.getElementById('support-status').textContent = 'Не удалось отправить: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('support-open-btn').addEventListener('click', openSupportChat);
+document.getElementById('support-back-btn').addEventListener('click', closeSupportChat);
+document.getElementById('support-send-btn').addEventListener('click', sendSupportMessage);
+
+// ------------------------- Переписка — сторона администратора -------------------------
+
+let chatThreadsCache = [];
+let activeChatTelegramId = null;
+
+async function loadChatThreads() {
+  const listEl = document.getElementById('chat-threads-list');
+  listEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  const session = await window.sessionStore.get();
+  try {
+    const { threads } = await adminAction('list_support_threads', { adminToken: session.loginToken });
+    chatThreadsCache = threads;
+    if (!threads.length) {
+      listEl.innerHTML = '<p class="empty-note">Сообщений нет.</p>';
+      return;
+    }
+    listEl.innerHTML = '';
+    for (const t of threads) listEl.appendChild(renderChatThreadRow(t, session.loginToken));
+  } catch (err) {
+    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+  }
+}
+
+function renderChatThreadRow(t, adminToken) {
+  const row = document.createElement('div');
+  row.className = `chat-thread-row ${t.telegram_id === activeChatTelegramId ? 'active' : ''}`;
+  const name = t.user
+    ? (t.user.username ? `@${t.user.username}` : [t.user.first_name, t.user.last_name].filter(Boolean).join(' ') || `id ${t.telegram_id}`)
+    : `id ${t.telegram_id}`;
+  row.innerHTML = `
+    <div class="chat-thread-name">${name}</div>
+    <div class="chat-thread-preview">${t.last_sender === 'admin' ? 'Вы: ' : ''}${t.last_text}</div>
+  `;
+  row.addEventListener('click', () => openChatConversation(t.telegram_id, name, adminToken));
+  return row;
+}
+
+async function openChatConversation(telegramId, name, adminToken) {
+  activeChatTelegramId = telegramId;
+  document.querySelectorAll('.chat-thread-row').forEach((el, i) => {
+    el.classList.toggle('active', chatThreadsCache[i]?.telegram_id === telegramId);
+  });
+  document.getElementById('chat-conversation-title').textContent = name;
+  const messagesEl = document.getElementById('chat-conversation-messages');
+  messagesEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  const input = document.getElementById('chat-reply-input');
+  const sendBtn = document.getElementById('chat-reply-send-btn');
+  input.disabled = false;
+  sendBtn.disabled = false;
+
+  try {
+    const { messages } = await adminAction('list_support_messages', { adminToken, targetTelegramId: telegramId });
+    messagesEl.innerHTML = '';
+    for (const m of messages) {
+      const row = document.createElement('div');
+      row.className = `support-message ${m.sender_role === 'admin' ? 'from-admin' : 'from-user'}`;
+      const textEl = document.createElement('div');
+      textEl.className = 'support-message-text';
+      textEl.textContent = m.text;
+      const timeEl = document.createElement('div');
+      timeEl.className = 'support-message-time';
+      timeEl.textContent = `${fmtDate(m.created_at)} ${fmtOnlyTime(m.created_at)}`;
+      row.appendChild(textEl);
+      row.appendChild(timeEl);
+      messagesEl.appendChild(row);
+    }
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  } catch (err) {
+    messagesEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+  }
+}
+
+async function sendChatReply() {
+  if (!activeChatTelegramId) return;
+  const input = document.getElementById('chat-reply-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const session = await window.sessionStore.get();
+  const sendBtn = document.getElementById('chat-reply-send-btn');
+  sendBtn.disabled = true;
+  try {
+    await adminAction('send_support_reply', { adminToken: session.loginToken, targetTelegramId: activeChatTelegramId, text });
+    input.value = '';
+    const name = document.getElementById('chat-conversation-title').textContent;
+    await openChatConversation(activeChatTelegramId, name, session.loginToken);
+    await loadChatThreads();
+  } catch (err) {
+    alert('Не удалось отправить: ' + err.message);
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+document.getElementById('chat-reply-send-btn').addEventListener('click', sendChatReply);
+document.getElementById('chat-reply-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendChatReply();
+});
+
 adminOpenBtn.addEventListener('click', openAdminPanel);
 document.getElementById('admin-back-btn').addEventListener('click', closeAdminPanel);
 document.getElementById('admin-tab-history').addEventListener('click', () => switchAdminTab('history'));
 document.getElementById('admin-tab-users').addEventListener('click', () => switchAdminTab('users'));
 document.getElementById('admin-tab-whitelist').addEventListener('click', () => switchAdminTab('whitelist'));
+document.getElementById('admin-tab-chat').addEventListener('click', () => switchAdminTab('chat'));
 document.getElementById('date-picker-btn').addEventListener('click', (e) => {
   e.stopPropagation();
   toggleCalendarPopover();

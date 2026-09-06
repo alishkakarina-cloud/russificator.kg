@@ -157,8 +157,10 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   document.getElementById('tab-users').hidden = tab !== 'users';
   document.getElementById('tab-history').hidden = tab !== 'history';
+  document.getElementById('tab-chat').hidden = tab !== 'chat';
   if (tab === 'users') loadUsers();
   if (tab === 'history') loadHistoryForSelectedDate();
+  if (tab === 'chat') loadChatThreads();
 }
 
 // ------------------------------- Пользователи -------------------------------
@@ -364,6 +366,95 @@ async function openSessionEvents(s, name) {
     overlayBody.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
   }
 }
+
+// ------------------------------- Чат с пользователями (Блок 7) -------------------------------
+
+let activeChatTelegramId = null;
+
+async function loadChatThreads() {
+  const listEl = document.getElementById('chat-threads-list');
+  listEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  try {
+    const { threads } = await adminAction('list_support_threads', {});
+    if (!threads.length) {
+      listEl.innerHTML = '<p class="empty-note">Сообщений нет.</p>';
+      return;
+    }
+    listEl.innerHTML = '';
+    for (const t of threads) listEl.appendChild(renderChatThreadCard(t));
+  } catch (err) {
+    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+  }
+}
+
+function chatThreadName(t) {
+  if (!t.user) return `id ${t.telegram_id}`;
+  return t.user.username ? `@${t.user.username}` : [t.user.first_name, t.user.last_name].filter(Boolean).join(' ') || `id ${t.telegram_id}`;
+}
+
+function renderChatThreadCard(t) {
+  const card = document.createElement('div');
+  card.className = 'card-row';
+  const name = chatThreadName(t);
+  card.innerHTML = `
+    <div class="card-name">${name}</div>
+    <div class="chat-thread-preview">${t.last_sender === 'admin' ? 'Вы: ' : ''}${t.last_text}</div>
+  `;
+  card.addEventListener('click', () => openChatConversation(t.telegram_id, name));
+  return card;
+}
+
+const chatScreen = document.getElementById('chat-conversation-screen');
+
+async function openChatConversation(telegramId, name) {
+  activeChatTelegramId = telegramId;
+  document.getElementById('chat-conversation-title').textContent = name;
+  const messagesEl = document.getElementById('chat-conversation-messages');
+  messagesEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  chatScreen.hidden = false;
+  try {
+    const { messages } = await adminAction('list_support_messages', { targetTelegramId: telegramId });
+    renderChatMessages(messages);
+  } catch (err) {
+    messagesEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+  }
+}
+
+function renderChatMessages(messages) {
+  const messagesEl = document.getElementById('chat-conversation-messages');
+  messagesEl.innerHTML = '';
+  for (const m of messages) {
+    const row = document.createElement('div');
+    row.className = `msg ${m.sender_role === 'admin' ? 'from-admin' : 'from-user'}`;
+    row.innerHTML = `<div>${m.text}</div><div class="msg-time">${fmtDate(m.created_at)} ${fmtTime(m.created_at)}</div>`;
+    messagesEl.appendChild(row);
+  }
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+async function sendChatReply() {
+  const input = document.getElementById('chat-reply-input');
+  const text = input.value.trim();
+  if (!text || !activeChatTelegramId) return;
+  try {
+    await adminAction('send_support_reply', { targetTelegramId: activeChatTelegramId, text });
+    input.value = '';
+    const { messages } = await adminAction('list_support_messages', { targetTelegramId: activeChatTelegramId });
+    renderChatMessages(messages);
+  } catch (err) {
+    alert('Не удалось отправить: ' + err.message);
+  }
+}
+
+document.getElementById('chat-conversation-back').addEventListener('click', () => {
+  chatScreen.hidden = true;
+  activeChatTelegramId = null;
+  loadChatThreads();
+});
+document.getElementById('chat-reply-send-btn').addEventListener('click', sendChatReply);
+document.getElementById('chat-reply-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendChatReply();
+});
 
 // ------------------------------- Инициализация -------------------------------
 

@@ -196,6 +196,60 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    // ------------------------- Переписка с пользователями (Блок 7) -------------------------
+    // Отправку с уведомлением боту делает пользовательская сторона
+    // (support-message) — здесь только чтение и ответ админа, без
+    // Telegram-уведомления пользователю (он видит ответ прямо в приложении
+    // через поллинг, как и требовала задача).
+
+    case 'list_support_threads': {
+      const { data: msgs, error } = await supabase
+        .from('support_messages')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (error) return json({ error: error.message }, 500);
+
+      const byUser = new Map<number, { telegram_id: number; last_text: string; last_at: string; last_sender: string; count: number }>();
+      for (const m of msgs ?? []) {
+        const existing = byUser.get(m.telegram_id);
+        if (existing) {
+          existing.count++;
+        } else {
+          byUser.set(m.telegram_id, { telegram_id: m.telegram_id, last_text: m.text, last_at: m.created_at, last_sender: m.sender_role, count: 1 });
+        }
+      }
+      const telegramIds = [...byUser.keys()];
+      const { data: users } = telegramIds.length
+        ? await supabase.from('telegram_users').select('telegram_id, username, first_name, last_name').in('telegram_id', telegramIds)
+        : { data: [] as { telegram_id: number; username: string | null; first_name: string | null; last_name: string | null }[] };
+      const userMap = new Map((users ?? []).map((u) => [u.telegram_id, u]));
+      const threads = telegramIds.map((id) => ({ ...byUser.get(id), user: userMap.get(id) ?? null }));
+      return json({ threads });
+    }
+
+    case 'list_support_messages': {
+      if (typeof body.targetTelegramId !== 'number') return json({ error: 'targetTelegramId обязателен' }, 400);
+      const { data, error } = await supabase
+        .from('support_messages')
+        .select('*')
+        .eq('telegram_id', body.targetTelegramId)
+        .order('created_at', { ascending: true });
+      if (error) return json({ error: error.message }, 500);
+      return json({ messages: data ?? [] });
+    }
+
+    case 'send_support_reply': {
+      if (typeof body.targetTelegramId !== 'number' || typeof body.text !== 'string' || !body.text.trim()) {
+        return json({ error: 'targetTelegramId и text обязательны' }, 400);
+      }
+      const text = body.text.trim().slice(0, 2000);
+      const { error } = await supabase
+        .from('support_messages')
+        .insert({ telegram_id: body.targetTelegramId, sender_role: 'admin', sender_admin_id: adminId, text });
+      if (error) return json({ error: error.message }, 500);
+      return json({ ok: true });
+    }
+
     default:
       return json({ error: 'Неизвестное действие' }, 400);
   }

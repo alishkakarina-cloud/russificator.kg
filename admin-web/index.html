@@ -48,6 +48,7 @@
   <nav class="tabs">
     <button class="tab-btn active" data-tab="users">Пользователи</button>
     <button class="tab-btn" data-tab="history">История</button>
+    <button class="tab-btn" data-tab="chat">Чат</button>
   </nav>
 
   <main id="tab-users" class="tab-content">
@@ -60,6 +61,22 @@
     </div>
     <div id="history-list" class="list"></div>
   </main>
+
+  <main id="tab-chat" class="tab-content" hidden>
+    <div id="chat-threads-list" class="list"></div>
+  </main>
+</div>
+
+<div id="chat-conversation-screen" class="chat-screen" hidden>
+  <header class="admin-header">
+    <button id="chat-conversation-back" class="icon-btn">← Назад</button>
+    <span id="chat-conversation-title" class="admin-title"></span>
+  </header>
+  <div id="chat-conversation-messages" class="chat-messages"></div>
+  <div class="chat-input-row">
+    <input type="text" id="chat-reply-input" placeholder="Ответ..." />
+    <button id="chat-reply-send-btn" class="primary-btn">Отправить</button>
+  </div>
 </div>
 
 <div id="user-detail-overlay" class="overlay" hidden>

@@ -252,6 +252,28 @@ h1 {
   color: #f2f2f2;
 }
 
+.support-open-btn {
+  /* Третья кнопка в правом верхнем углу, ниже .admin-open-btn — та же
+     логика, что и в комментарии выше про session-timer. */
+  position: fixed;
+  top: 94px;
+  right: 18px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 7px;
+  border: 1px solid #343844;
+  background: #23262f;
+  color: #9aa0a6;
+  cursor: pointer;
+  z-index: 20;
+}
+
+.support-open-btn:hover {
+  background: #2b2f3a;
+  color: #f2f2f2;
+}
+
 #car-picker {
   position: relative;
 }
@@ -517,7 +539,8 @@ h1 {
 
 #admin-history,
 #admin-users,
-#admin-whitelist {
+#admin-whitelist,
+#admin-chat {
   flex: 1;
   min-height: 0;
   flex-direction: column;
@@ -525,7 +548,8 @@ h1 {
 
 #admin-history:not([hidden]),
 #admin-users:not([hidden]),
-#admin-whitelist:not([hidden]) {
+#admin-whitelist:not([hidden]),
+#admin-chat:not([hidden]) {
   display: flex;
 }
 
@@ -919,6 +943,182 @@ h1 {
   align-self: flex-end;
   margin-top: 12px;
   flex-shrink: 0;
+}
+
+/* ------------------------- "Написать администратору" (Блок 7) ------------------------- */
+
+#screen-support {
+  width: 100%;
+  height: 100vh;
+  padding: 16px;
+  text-align: left;
+  overflow: hidden;
+}
+
+#screen-support:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+}
+
+.support-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.support-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #f2f2f2;
+}
+
+.support-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.support-message {
+  max-width: 85%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.support-message.from-user {
+  align-self: flex-end;
+  background: #2b6ef2;
+  color: #fff;
+}
+
+.support-message.from-admin {
+  align-self: flex-start;
+  background: #23262f;
+  color: #f2f2f2;
+}
+
+.support-message-time {
+  font-size: 10px;
+  opacity: 0.65;
+  margin-top: 3px;
+}
+
+.support-input-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-shrink: 0;
+}
+
+.support-textarea {
+  flex: 1;
+  resize: none;
+  background: #1a1d24;
+  border: 1px solid #343844;
+  border-radius: 8px;
+  color: #f2f2f2;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.support-input-row .primary-btn {
+  width: auto;
+  padding: 0 18px;
+}
+
+/* ------------------------- Переписка — сторона администратора ------------------------- */
+
+.chat-shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 16px;
+}
+
+.chat-threads-list {
+  width: 220px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border: 1px solid #23262f;
+  border-radius: 10px;
+}
+
+.chat-thread-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid #23262f;
+  cursor: pointer;
+}
+
+.chat-thread-row:hover {
+  background: #1a1d24;
+}
+
+.chat-thread-row.active {
+  background: #23262f;
+}
+
+.chat-thread-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.chat-thread-preview {
+  font-size: 12px;
+  color: #9aa0a6;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-conversation {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #23262f;
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.chat-conversation-title {
+  font-weight: 600;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+  color: #f2f2f2;
+}
+
+.chat-conversation-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-shrink: 0;
+}
+
+.chat-input-row .text-input {
+  flex: 1;
+}
+
+.chat-input-row .primary-btn {
+  width: auto;
+  padding: 0 18px;
 }
 
 /* ---- Админ-панель: вкладка Whitelist ---- */

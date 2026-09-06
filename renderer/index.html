@@ -93,6 +93,7 @@
 
   <main class="screen" id="screen-main" hidden>
     <button id="admin-open-btn" class="admin-open-btn">Админ панель</button>
+    <button id="support-open-btn" class="support-open-btn">Написать администратору</button>
     <h1>russificator.kg</h1>
     <p class="subtitle">Русификация автомобилей</p>
 
@@ -124,6 +125,19 @@
     <button id="finish-terminal-btn" class="finish-btn">Завершено</button>
   </main>
 
+  <main class="screen" id="screen-support" hidden>
+    <div class="support-header">
+      <button id="support-back-btn" class="admin-back-btn">← Назад</button>
+      <span class="support-title">Написать администратору</span>
+    </div>
+    <div id="support-messages" class="support-messages"></div>
+    <div class="support-input-row">
+      <textarea id="support-input" class="support-textarea" placeholder="Сообщение..." rows="2"></textarea>
+      <button id="support-send-btn" class="primary-btn">Отправить</button>
+    </div>
+    <p id="support-status" class="status"></p>
+  </main>
+
   <main class="screen" id="screen-admin" hidden>
     <div class="admin-shell">
       <aside class="admin-sidebar">
@@ -139,6 +153,7 @@
           </div>
           <button id="admin-tab-users" class="admin-nav-btn">Пользователи</button>
           <button id="admin-tab-whitelist" class="admin-nav-btn">Whitelist</button>
+          <button id="admin-tab-chat" class="admin-nav-btn">Переписка</button>
         </nav>
       </aside>
 
@@ -159,6 +174,19 @@
           </div>
           <p id="whitelist-status" class="status"></p>
           <div id="whitelist-list" class="whitelist-list"></div>
+        </div>
+        <div id="admin-chat" hidden>
+          <div class="chat-shell">
+            <div id="chat-threads-list" class="chat-threads-list"></div>
+            <div class="chat-conversation">
+              <div id="chat-conversation-title" class="chat-conversation-title">Выберите переписку слева</div>
+              <div id="chat-conversation-messages" class="chat-conversation-messages"></div>
+              <div class="chat-input-row">
+                <input id="chat-reply-input" type="text" class="text-input" placeholder="Ответ..." disabled />
+                <button id="chat-reply-send-btn" class="primary-btn" disabled>Отправить</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
     </div>
