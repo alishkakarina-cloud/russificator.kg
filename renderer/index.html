@@ -16,7 +16,16 @@
   <main class="screen" id="screen-login">
     <h1>russificator.kg</h1>
     <p class="subtitle">Вход в систему</p>
-    <button id="telegram-login-btn" class="primary-btn">Войти через Telegram</button>
+
+    <input id="login-nickname" type="text" class="text-input" placeholder="Никнейм" autocomplete="username" />
+    <input id="login-password" type="password" class="text-input" placeholder="Пароль" autocomplete="current-password" />
+    <button id="login-password-btn" class="primary-btn">Войти</button>
+    <p id="login-password-status" class="status"></p>
+    <button id="show-register-btn" class="secondary-btn">Зарегистрироваться</button>
+
+    <div class="login-divider"><span>или</span></div>
+
+    <button id="telegram-login-btn" class="secondary-btn">Войти через Telegram (для админов)</button>
     <button id="update-available-btn" class="update-btn" hidden>
       <span id="update-btn-progress" class="update-btn-progress"></span>
       <span class="update-btn-content">
@@ -25,6 +34,26 @@
       </span>
     </button>
     <p id="login-status" class="status"></p>
+  </main>
+
+  <main class="screen" id="screen-register" hidden>
+    <h1>russificator.kg</h1>
+    <p class="subtitle">Регистрация</p>
+
+    <div id="register-form">
+      <input id="register-username" type="text" class="text-input" placeholder="Telegram-юзернейм (без @)" />
+      <input id="register-nickname" type="text" class="text-input" placeholder="Никнейм" autocomplete="username" />
+      <input id="register-password" type="password" class="text-input" placeholder="Пароль" autocomplete="new-password" />
+      <button id="register-activate-btn" class="primary-btn">Активировать</button>
+    </div>
+
+    <div id="register-waiting" hidden>
+      <div class="spinner"></div>
+      <p class="subtitle" id="register-waiting-text">Откройте Telegram и нажмите Start, чтобы подтвердить...</p>
+    </div>
+
+    <p id="register-status" class="status"></p>
+    <button id="register-back-btn" class="secondary-btn">← Назад ко входу</button>
   </main>
 
   <main class="screen" id="screen-forced-update" hidden>

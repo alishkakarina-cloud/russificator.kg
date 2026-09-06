@@ -86,6 +86,13 @@ Deno.serve(async (req) => {
     const label = from.username ? `@${from.username}` : `id ${from.id}`;
     const name = [from.first_name, from.last_name].filter(Boolean).join(' ');
 
+    const { data: tokenRow } = await supabase
+      .from('telegram_login_tokens')
+      .select('purpose')
+      .eq('token', token)
+      .maybeSingle();
+    const purpose = tokenRow?.purpose === 'register' ? 'register' : 'login';
+
     // Учитываем каждого, кто хоть раз нажал Start — видно в админ-панели
     // (список пользователей), независимо от исхода этого конкретного входа.
     await supabase.from('telegram_users').upsert(
@@ -146,6 +153,38 @@ Deno.serve(async (req) => {
         .eq('status', 'pending_telegram');
       await logEvent(from.id, 'login_rejected', { auto: true, reason: 'blocked' });
       await tg('sendMessage', { chat_id: from.id, text: 'Доступ заблокирован администратором.' });
+      return new Response(JSON.stringify({ ok: true }));
+    }
+
+    // Регистрация по никнейму/паролю: это разовое подтверждение личности
+    // (юзернейм в whitelist + реальный Telegram ID теперь известен), без
+    // ручного одобрения администратором и без обычного approved-статуса —
+    // саму учётную запись (никнейм+пароль) заводит register-account,
+    // отдельным шагом в приложении, только после этого статуса.
+    if (purpose === 'register') {
+      const { data: row } = await supabase
+        .from('telegram_login_tokens')
+        .update({
+          telegram_user: telegramUserPayload,
+          confirmed_at: new Date().toISOString(),
+          status: 'registration_confirmed',
+        })
+        .eq('token', token)
+        .eq('status', 'pending_telegram')
+        .select()
+        .maybeSingle();
+
+      if (row) {
+        await tg('sendMessage', {
+          chat_id: from.id,
+          text: 'Личность подтверждена — вернитесь в приложение и задайте никнейм и пароль.',
+        });
+      } else {
+        await tg('sendMessage', {
+          chat_id: from.id,
+          text: 'Ссылка для регистрации устарела — вернитесь в приложение и начните регистрацию заново.',
+        });
+      }
       return new Response(JSON.stringify({ ok: true }));
     }
 

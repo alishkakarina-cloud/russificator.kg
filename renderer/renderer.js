@@ -12,6 +12,7 @@ const SESSION_MS = 10 * 60 * 1000;
 
 const screens = {
   login: document.getElementById('screen-login'),
+  register: document.getElementById('screen-register'),
   forcedUpdate: document.getElementById('screen-forced-update'),
   waiting: document.getElementById('screen-waiting'),
   rejected: document.getElementById('screen-rejected'),
@@ -74,13 +75,15 @@ async function callFunction(name, body) {
 const carSession = (action, payload) => callFunction('car-session', { action, ...payload });
 const adminAction = (action, payload) => callFunction('admin-action', { action, ...payload });
 
-async function startTelegramLoginToken() {
+async function startTelegramLoginToken(purpose = 'login') {
   const res = await fetch(`${SUPABASE_URL}/functions/v1/telegram-login-start`, {
     method: 'POST',
     headers: {
       apikey: SUPABASE_ANON_KEY,
       Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
     },
+    body: JSON.stringify({ purpose }),
   });
   if (!res.ok) {
     throw new Error(`Не удалось начать вход (${res.status}): ${await res.text()}`);
@@ -270,6 +273,140 @@ function cancelLogin() {
 
 function retryLogin() {
   showScreen('login');
+}
+
+// ------------------------- Вход по никнейму/паролю -------------------------
+// Обычный путь для всех, кроме админов (они по-прежнему жмут "Войти через
+// Telegram" ниже). Выданный login-account токен — обычный approved
+// loginToken, вся остальная логика приложения не отличает, как он получен.
+
+async function loginWithPassword() {
+  const nicknameEl = document.getElementById('login-nickname');
+  const passwordEl = document.getElementById('login-password');
+  const statusEl = document.getElementById('login-password-status');
+  const btn = document.getElementById('login-password-btn');
+
+  const nickname = nicknameEl.value.trim();
+  const password = passwordEl.value;
+  statusEl.textContent = '';
+  if (!nickname || !password) {
+    statusEl.textContent = 'Заполните никнейм и пароль';
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const { token } = await callFunction('login-account', { nickname, password });
+    const row = await fetchTokenRow(token);
+    await enterMainScreen(row?.telegram_user?.id, token);
+  } catch (err) {
+    statusEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ------------------------------ Регистрация ------------------------------
+// Юзернейм проверяется на сервере по whitelist (Блок 1) — сначала разовое
+// подтверждение личности через Telegram (без ручного одобрения админом),
+// затем сразу создаётся учётная запись и человек оказывается внутри,
+// минуя отдельный повторный вход.
+
+let registerPollTimer = null;
+
+function stopRegisterPolling() {
+  if (registerPollTimer) {
+    clearInterval(registerPollTimer);
+    registerPollTimer = null;
+  }
+}
+
+function showRegisterScreen() {
+  document.getElementById('register-form').hidden = false;
+  document.getElementById('register-waiting').hidden = true;
+  document.getElementById('register-status').textContent = '';
+  document.getElementById('register-username').value = '';
+  document.getElementById('register-nickname').value = '';
+  document.getElementById('register-password').value = '';
+  showScreen('register');
+}
+
+function backFromRegister() {
+  stopRegisterPolling();
+  showScreen('login');
+}
+
+async function startRegistration() {
+  const usernameEl = document.getElementById('register-username');
+  const nicknameEl = document.getElementById('register-nickname');
+  const passwordEl = document.getElementById('register-password');
+  const statusEl = document.getElementById('register-status');
+  const formEl = document.getElementById('register-form');
+  const waitingEl = document.getElementById('register-waiting');
+  const waitingTextEl = document.getElementById('register-waiting-text');
+
+  const username = usernameEl.value.trim().replace(/^@/, '');
+  const nickname = nicknameEl.value.trim();
+  const password = passwordEl.value;
+
+  statusEl.textContent = '';
+  if (!username) {
+    statusEl.textContent = 'Введите Telegram-юзернейм';
+    return;
+  }
+  if (nickname.length < 3) {
+    statusEl.textContent = 'Никнейм — не короче 3 символов';
+    return;
+  }
+  if (password.length < 6) {
+    statusEl.textContent = 'Пароль — не короче 6 символов';
+    return;
+  }
+
+  const activateBtn = document.getElementById('register-activate-btn');
+  activateBtn.disabled = true;
+  try {
+    const token = await startTelegramLoginToken('register');
+    await window.app.openExternal(`https://t.me/${BOT_USERNAME}?start=${token}`);
+    formEl.hidden = true;
+    waitingEl.hidden = false;
+    waitingTextEl.textContent = 'Откройте Telegram и нажмите Start, чтобы подтвердить...';
+
+    stopRegisterPolling();
+    registerPollTimer = setInterval(async () => {
+      let row;
+      try {
+        row = await fetchTokenRow(token);
+      } catch (err) {
+        return; // сетевой сбой при опросе — пробуем на следующем тике, не прерываем
+      }
+      if (!row) return;
+
+      if (row.status === 'registration_confirmed') {
+        stopRegisterPolling();
+        waitingTextEl.textContent = 'Подтверждено — создаём учётную запись...';
+        try {
+          const { token: newToken } = await callFunction('register-account', { loginToken: token, nickname, password });
+          await enterMainScreen(row.telegram_user?.id, newToken);
+        } catch (err) {
+          formEl.hidden = false;
+          waitingEl.hidden = true;
+          statusEl.textContent = err.message;
+        }
+      } else if (row.status === 'rejected') {
+        stopRegisterPolling();
+        formEl.hidden = false;
+        waitingEl.hidden = true;
+        statusEl.textContent = 'Отказано: юзернейм не в списке разрешённых или доступ заблокирован.';
+      }
+    }, POLL_INTERVAL_MS);
+  } catch (err) {
+    statusEl.textContent = 'Ошибка: ' + err.message;
+    formEl.hidden = false;
+    waitingEl.hidden = true;
+  } finally {
+    activateBtn.disabled = false;
+  }
 }
 
 // Доверенным пользователям (админ-панель -> Пользователи -> "Доверенный")
@@ -707,6 +844,17 @@ terminalFinishBtn.addEventListener('click', finishSession);
 document.getElementById('telegram-login-btn').addEventListener('click', beginTelegramLogin);
 document.getElementById('cancel-login-btn').addEventListener('click', cancelLogin);
 document.getElementById('retry-login-btn').addEventListener('click', retryLogin);
+
+document.getElementById('login-password-btn').addEventListener('click', loginWithPassword);
+document.getElementById('login-password').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loginWithPassword();
+});
+document.getElementById('show-register-btn').addEventListener('click', showRegisterScreen);
+document.getElementById('register-activate-btn').addEventListener('click', startRegistration);
+document.getElementById('register-back-btn').addEventListener('click', backFromRegister);
+document.getElementById('register-password').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') startRegistration();
+});
 
 // ------------------------- Обновление: кнопка на входе + принудительный экран -------------------------
 // electron-updater только проверяет наличие обновления сам при старте
