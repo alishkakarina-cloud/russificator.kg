@@ -668,37 +668,50 @@ async function sessionTimerTick() {
 // комментарий выше). Отличается от обычного "Завершено" пометкой в базе
 // (reason: 'timer_expired'), чтобы в истории сессий было видно, что это не
 // человек сам завершил работу, а сработал лимит времени.
+// Вся операция обёрнута в try/finally с showScreen('login') в finally —
+// раньше (до этого фикса) window.sessionStore.clear() был единственным
+// вызовом здесь БЕЗ .catch(), и если он падал по любой причине (антивирус
+// временно заблокировал файл конфигурации, диск недоступен, IPC-сбой), вся
+// функция обрывалась необработанным исключением ДО showScreen('login') —
+// приложение оставалось на экране терминала навсегда, без возможности снова
+// войти без ручного перезапуска. Теперь любой сбой на любом шаге не мешает
+// гарантированному возврату на экран входа.
 async function forceExpireSession(session) {
   stopSessionTimer();
   stopHeartbeat();
   stopKickPoll();
 
-  await window.automaxkg.killTerminal().catch((e) => console.error('Не удалось завершить AUTOMAX KG при истечении таймера', e));
-  window.removeEventListener('resize', handleTerminalResize);
-  if (term) {
-    term.dispose();
-    term = null;
-    fitAddon = null;
-  }
+  try {
+    await window.automaxkg.killTerminal().catch((e) => console.error('Не удалось завершить AUTOMAX KG при истечении таймера', e));
+    window.removeEventListener('resize', handleTerminalResize);
+    if (term) {
+      term.dispose();
+      term = null;
+      fitAddon = null;
+    }
 
-  if (activeCarSession) {
-    await carSession('finish', {
+    if (activeCarSession) {
+      await carSession('finish', {
+        loginToken: session.loginToken,
+        sessionId: activeCarSession.id,
+        detail: { auto: true, reason: 'timer_expired' },
+      }).catch((e) => console.error('Не удалось закрыть сессию при истечении таймера', e));
+      activeCarSession = null;
+    }
+
+    await carSession('log_event', {
       loginToken: session.loginToken,
-      sessionId: activeCarSession.id,
-      detail: { auto: true, reason: 'timer_expired' },
-    }).catch((e) => console.error('Не удалось закрыть сессию при истечении таймера', e));
-    activeCarSession = null;
+      eventType: 'session_expired',
+      detail: { lastActivityAt: session.lastActivityAt, forced: true },
+    }).catch((e) => console.error('Не удалось залогировать истечение сессии', e));
+
+    await window.sessionStore.clear().catch((e) => console.error('Не удалось очистить локальную сессию при истечении таймера', e));
+    await window.app.setTerminalMode(false).catch(() => {});
+  } catch (err) {
+    console.error('Непредвиденная ошибка при принудительном завершении сессии (истечение таймера)', err);
+  } finally {
+    showScreen('login');
   }
-
-  await carSession('log_event', {
-    loginToken: session.loginToken,
-    eventType: 'session_expired',
-    detail: { lastActivityAt: session.lastActivityAt, forced: true },
-  }).catch((e) => console.error('Не удалось залогировать истечение сессии', e));
-
-  await window.sessionStore.clear();
-  await window.app.setTerminalMode(false).catch(() => {});
-  showScreen('login');
 }
 
 // ------------------------- Мгновенный кик (Блок 5) -------------------------
@@ -743,31 +756,38 @@ async function kickPollTick() {
   }
 }
 
+// Тот же фикс, что и в forceExpireSession — гарантированный showScreen('login')
+// в finally, независимо от того, упал ли какой-то из шагов ниже.
 async function forceKickSession(session) {
   stopSessionTimer();
   stopHeartbeat();
   stopKickPoll();
 
-  await window.automaxkg.killTerminal().catch((e) => console.error('Не удалось завершить AUTOMAX KG при кике', e));
-  window.removeEventListener('resize', handleTerminalResize);
-  if (term) {
-    term.dispose();
-    term = null;
-    fitAddon = null;
-  }
+  try {
+    await window.automaxkg.killTerminal().catch((e) => console.error('Не удалось завершить AUTOMAX KG при кике', e));
+    window.removeEventListener('resize', handleTerminalResize);
+    if (term) {
+      term.dispose();
+      term = null;
+      fitAddon = null;
+    }
 
-  if (activeCarSession) {
-    await carSession('finish', {
-      loginToken: session.loginToken,
-      sessionId: activeCarSession.id,
-      detail: { auto: true, reason: 'kicked' },
-    }).catch((e) => console.error('Не удалось закрыть сессию при кике', e));
-    activeCarSession = null;
-  }
+    if (activeCarSession) {
+      await carSession('finish', {
+        loginToken: session.loginToken,
+        sessionId: activeCarSession.id,
+        detail: { auto: true, reason: 'kicked' },
+      }).catch((e) => console.error('Не удалось закрыть сессию при кике', e));
+      activeCarSession = null;
+    }
 
-  await window.sessionStore.clear();
-  await window.app.setTerminalMode(false).catch(() => {});
-  showScreen('login');
+    await window.sessionStore.clear().catch((e) => console.error('Не удалось очистить локальную сессию при кике', e));
+    await window.app.setTerminalMode(false).catch(() => {});
+  } catch (err) {
+    console.error('Непредвиденная ошибка при принудительном завершении сессии (кик)', err);
+  } finally {
+    showScreen('login');
+  }
 }
 
 let carModelsCache = null;

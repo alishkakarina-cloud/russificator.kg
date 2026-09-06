@@ -468,6 +468,19 @@ function createWindow() {
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
+  // Диагностика: ошибки/console.error из рендерера раньше нигде не
+  // сохранялись (electron-log ловит только исключения из main-процесса) —
+  // без этого баг вида "кнопка ничего не делает" из-за JS-исключения в
+  // renderer.js было не отличить от сетевой/UI проблемы без ручного
+  // открытия DevTools у пользователя.
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    // В Electron 26+ level — строка ('error'/'warning'/'info'/'debug'), а не
+    // число, как было в старых версиях API — проверяем оба варианта.
+    if (level === 'error' || level === 'warning' || level === 2 || level === 3) {
+      log.warn(`[renderer console] ${sourceId}:${line} ${message}`);
+    }
+  });
+
   // AUTOMAX KG теперь наш дочерний процесс — закрытие окна во время активной
   // работы с машиной реально его убьёт (раньше не могло, это было отдельное
   // окно ОС). Если это может прервать запись на устройство, предупреждаем и
