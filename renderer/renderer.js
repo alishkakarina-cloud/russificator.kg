@@ -645,6 +645,7 @@ async function sessionTimerTick() {
   if (!session) {
     stopSessionTimer();
     stopHeartbeat();
+    stopKickPoll();
     return;
   }
 
@@ -669,6 +670,7 @@ async function sessionTimerTick() {
 async function forceExpireSession(session) {
   stopSessionTimer();
   stopHeartbeat();
+  stopKickPoll();
 
   await window.automaxkg.killTerminal().catch((e) => console.error('Не удалось завершить AUTOMAX KG при истечении таймера', e));
   window.removeEventListener('resize', handleTerminalResize);
@@ -692,6 +694,75 @@ async function forceExpireSession(session) {
     eventType: 'session_expired',
     detail: { lastActivityAt: session.lastActivityAt, forced: true },
   }).catch((e) => console.error('Не удалось залогировать истечение сессии', e));
+
+  await window.sessionStore.clear();
+  await window.app.setTerminalMode(false).catch(() => {});
+  showScreen('login');
+}
+
+// ------------------------- Мгновенный кик (Блок 5) -------------------------
+// СОЗНАТЕЛЬНОЕ РЕШЕНИЕ, НЕ БАГ: кик из админ-панели принудительно закрывает
+// AUTOMAX KG на машине пользователя, даже если в этот момент идёт активная
+// запись на блок управления по USB/OBD. Риск подтверждён пользователем
+// (владельцем продукта) явно и повторно перед реализацией. Отличается от
+// forceExpireSession (истечение таймера) тем, что опрашивается гораздо чаще
+// (каждые 5 секунд, а не через 1-секундный тик таймера сессии) и действует
+// независимо от того, доверенный пользователь или нет — таймера у доверенных
+// нет, но кик должен работать для всех.
+const KICK_POLL_INTERVAL_MS = 5 * 1000;
+let kickPollTimer = null;
+
+function stopKickPoll() {
+  if (kickPollTimer) {
+    clearInterval(kickPollTimer);
+    kickPollTimer = null;
+  }
+}
+
+function startKickPoll() {
+  stopKickPoll();
+  kickPollTimer = setInterval(kickPollTick, KICK_POLL_INTERVAL_MS);
+}
+
+async function kickPollTick() {
+  const session = await window.sessionStore.get();
+  if (!session) {
+    stopKickPoll();
+    return;
+  }
+  let blocked = false;
+  try {
+    blocked = await isBlocked(session.telegramId);
+  } catch (err) {
+    console.error('Не удалось проверить статус блокировки (кик)', err);
+    return;
+  }
+  if (blocked) {
+    await forceKickSession(session);
+  }
+}
+
+async function forceKickSession(session) {
+  stopSessionTimer();
+  stopHeartbeat();
+  stopKickPoll();
+
+  await window.automaxkg.killTerminal().catch((e) => console.error('Не удалось завершить AUTOMAX KG при кике', e));
+  window.removeEventListener('resize', handleTerminalResize);
+  if (term) {
+    term.dispose();
+    term = null;
+    fitAddon = null;
+  }
+
+  if (activeCarSession) {
+    await carSession('finish', {
+      loginToken: session.loginToken,
+      sessionId: activeCarSession.id,
+      detail: { auto: true, reason: 'kicked' },
+    }).catch((e) => console.error('Не удалось закрыть сессию при кике', e));
+    activeCarSession = null;
+  }
 
   await window.sessionStore.clear();
   await window.app.setTerminalMode(false).catch(() => {});
@@ -800,6 +871,7 @@ async function finishSession() {
     // раз пользователь уходит с рабочего экрана.
     stopSessionTimer();
     stopHeartbeat();
+    stopKickPoll();
     await window.sessionStore.clear();
     await window.app.setTerminalMode(false);
     showScreen('login');
@@ -845,9 +917,11 @@ async function initMainScreen() {
 
     startSessionTimer(await isTrustedUser(session.loginToken));
     startHeartbeat(session.loginToken);
+    startKickPoll();
   } else {
     stopSessionTimer();
     stopHeartbeat();
+    stopKickPoll();
   }
   renderActiveSession();
 }
@@ -1281,6 +1355,8 @@ async function openSessionDetail(s, name, adminToken) {
         label =
           ev.detail.reason === 'timer_expired'
             ? 'Прервана истечением таймера (10 минут)'
+            : ev.detail.reason === 'kicked'
+            ? 'Прервана мгновенным киком администратора'
             : 'Закрыта автоматически (осталась незавершённой)';
       }
       const detailText = fmtEventDetail(ev);
