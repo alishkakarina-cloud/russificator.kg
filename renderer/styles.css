@@ -695,10 +695,34 @@ h1 {
 .user-header-row,
 .user-row {
   display: grid;
-  grid-template-columns: 1.5fr 0.6fr 0.6fr 0.6fr;
+  grid-template-columns: 1.3fr 0.9fr 0.6fr 0.6fr 0.6fr;
   align-items: center;
   gap: 14px;
   padding: 11px 16px;
+}
+
+.online-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #9aa0a6;
+}
+
+.online-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #5a606b;
+  flex-shrink: 0;
+}
+
+.online-indicator.online .online-dot {
+  background: #4cd964;
+}
+
+.online-indicator.online {
+  color: #4cd964;
 }
 
 .user-header-row {

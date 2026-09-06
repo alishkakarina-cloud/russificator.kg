@@ -644,6 +644,7 @@ async function sessionTimerTick() {
   const session = await window.sessionStore.get();
   if (!session) {
     stopSessionTimer();
+    stopHeartbeat();
     return;
   }
 
@@ -667,6 +668,7 @@ async function sessionTimerTick() {
 // человек сам завершил работу, а сработал лимит времени.
 async function forceExpireSession(session) {
   stopSessionTimer();
+  stopHeartbeat();
 
   await window.automaxkg.killTerminal().catch((e) => console.error('Не удалось завершить AUTOMAX KG при истечении таймера', e));
   window.removeEventListener('resize', handleTerminalResize);
@@ -797,6 +799,7 @@ async function finishSession() {
     // отдельное "продление/сброс" — сам счётчик всё равно больше не нужен,
     // раз пользователь уходит с рабочего экрана.
     stopSessionTimer();
+    stopHeartbeat();
     await window.sessionStore.clear();
     await window.app.setTerminalMode(false);
     showScreen('login');
@@ -841,10 +844,35 @@ async function initMainScreen() {
     }
 
     startSessionTimer(await isTrustedUser(session.loginToken));
+    startHeartbeat(session.loginToken);
   } else {
     stopSessionTimer();
+    stopHeartbeat();
   }
   renderActiveSession();
+}
+
+// ------------------------------ Онлайн-статус ------------------------------
+// Каждые HEARTBEAT_INTERVAL_MS, пока приложение открыто с активной сессией
+// (не только на главном экране — и во встроенном терминале тоже, поэтому
+// запускается из initMainScreen так же, как и таймер сессии, а не
+// привязано к конкретному экрану). "Онлайн" в админ-панели — это просто
+// "последний heartbeat был недавно", отдельного статуса на сервере нет.
+const HEARTBEAT_INTERVAL_MS = 45 * 1000;
+let heartbeatInterval = null;
+
+function startHeartbeat(loginToken) {
+  stopHeartbeat();
+  const send = () => callFunction('heartbeat', { loginToken }).catch((e) => console.error('heartbeat не прошёл', e));
+  send();
+  heartbeatInterval = setInterval(send, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeat() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
 }
 
 carDropdownBtn.addEventListener('click', toggleCarDropdown);
@@ -1350,16 +1378,30 @@ async function loadUsersList() {
 function renderUsersHeader() {
   const header = document.createElement('div');
   header.className = 'user-header-row';
-  header.innerHTML = `<div>Пользователь</div><div>Доверенный</div><div>Доступ</div><div></div>`;
+  header.innerHTML = `<div>Пользователь</div><div>Онлайн</div><div>Доверенный</div><div>Доступ</div><div></div>`;
   return header;
+}
+
+// Онлайн — не отдельный статус на сервере, а просто "последний heartbeat
+// был не позже двух интервалов назад" (двух — а не одного, чтобы разовая
+// задержка сети не показывала человека офлайн, пока он ещё реально в сети).
+const ONLINE_THRESHOLD_MS = HEARTBEAT_INTERVAL_MS * 2;
+
+function formatOnlineStatus(lastHeartbeatAt) {
+  if (!lastHeartbeatAt) return { online: false, label: 'не в сети' };
+  const ms = Date.now() - new Date(lastHeartbeatAt).getTime();
+  if (ms < ONLINE_THRESHOLD_MS) return { online: true, label: 'в сети' };
+  return { online: false, label: `был(а) ${fmtDate(lastHeartbeatAt)} ${fmtOnlyTime(lastHeartbeatAt)}` };
 }
 
 function renderUserRow(u, adminToken) {
   const row = document.createElement('div');
   row.className = 'user-row';
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || `id ${u.telegram_id}`;
+  const online = formatOnlineStatus(u.last_heartbeat_at);
   row.innerHTML = `
     <div class="col-name">${name}${u.username ? `<span class="username">@${u.username}</span>` : ''}</div>
+    <span class="online-indicator ${online.online ? 'online' : ''}"><span class="online-dot"></span>${online.label}</span>
     <button class="trusted-toggle-btn ${u.trusted ? 'on' : ''}">Доверенный</button>
     <button class="kick-toggle-btn ${u.blocked ? 'blocked' : ''}">${u.blocked ? 'Восстановить' : 'Кикнуть'}</button>
     <button class="history-btn">История</button>
