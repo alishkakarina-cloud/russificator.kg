@@ -4,12 +4,11 @@ contextBridge.exposeInMainWorld('automaxkg', {
   status: () => ipcRenderer.invoke('automaxkg-status'),
   getCleanupResult: () => ipcRenderer.invoke('automaxkg-cleanup-result'),
   getDeviceId: () => ipcRenderer.invoke('get-device-id'),
-  download: (files, key) => ipcRenderer.invoke('automaxkg-download', { files, key }),
-  encryptExisting: (key) => ipcRenderer.invoke('automaxkg-encrypt-existing', { key }),
+  download: (files) => ipcRenderer.invoke('automaxkg-download', { files }),
   onDownloadProgress: (callback) => {
     ipcRenderer.on('automaxkg-download-progress', (_event, data) => callback(data));
   },
-  startTerminal: (cols, rows, key) => ipcRenderer.invoke('automaxkg-terminal-start', { cols, rows, key }),
+  startTerminal: (cols, rows) => ipcRenderer.invoke('automaxkg-terminal-start', { cols, rows }),
   sendInput: (data) => ipcRenderer.send('automaxkg-terminal-input', data),
   resizeTerminal: (cols, rows) => ipcRenderer.send('automaxkg-terminal-resize', { cols, rows }),
   killTerminal: () => ipcRenderer.invoke('automaxkg-terminal-kill'),

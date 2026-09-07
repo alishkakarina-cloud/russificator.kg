@@ -660,23 +660,14 @@ function createWindow() {
 // вместо отдельного окна ОС. cwd выставляем явно в AUTOMAXKG_DIR — раньше
 // рабочую директорию выставляла сама ОС по местоположению файла (как при
 // двойном клике), здесь мы её задаём напрямую тем же результатом.
-// Перед каждым запуском файлы расшифровываются заново из AUTOMAXKG_DIR (где
-// они лежат зашифрованными постоянно) во временную AUTOMAXKG_DECRYPTED_DIR —
-// именно из неё и запускается AUTOMAX KG. key передаётся сюда уже полученным
-// от automaxkg-key (свежий запрос на каждый запуск, не переиспользуем старый).
-ipcMain.handle('automaxkg-terminal-start', async (event, { cols, rows, key }) => {
+// Шифрование отключено (откат) — запускаем напрямую из AUTOMAXKG_DIR, без
+// промежуточного шага расшифровки во временную копию.
+ipcMain.handle('automaxkg-terminal-start', async (event, { cols, rows }) => {
   if (activePty) {
     return { ok: false, error: 'AUTOMAX KG уже запущена' };
   }
   if (!isAutomaxKgPresent()) {
     return { ok: false, error: 'Файлы AUTOMAX KG не найдены на этом компьютере' };
-  }
-
-  try {
-    await decryptForLaunch(keyHexToBuffer(key));
-  } catch (err) {
-    cleanupDecryptedCopy();
-    return { ok: false, error: `Не удалось расшифровать файлы: ${err.message}` };
   }
 
   try {
@@ -689,16 +680,15 @@ ipcMain.handle('automaxkg-terminal-start', async (event, { cols, rows, key }) =>
     // аргументов, иначе node-pty заново заэкранирует уже готовые кавычки).
     // Проверено вручную на реальном файле AUTOMAX KG — без этого запуск
     // падает с "не является внутренней или внешней командой".
-    activePty = pty.spawn('cmd.exe', `/d /s /c ""${AUTOMAXKG_DECRYPTED_BAT_PATH}""`, {
+    activePty = pty.spawn('cmd.exe', `/d /s /c ""${AUTOMAXKG_BAT_PATH}""`, {
       name: 'xterm-256color',
       cols: cols > 0 ? cols : 80,
       rows: rows > 0 ? rows : 30,
-      cwd: AUTOMAXKG_DECRYPTED_DIR,
+      cwd: AUTOMAXKG_DIR,
       env: process.env,
     });
   } catch (err) {
     activePty = null;
-    cleanupDecryptedCopy();
     return { ok: false, error: err.message };
   }
 
@@ -708,7 +698,6 @@ ipcMain.handle('automaxkg-terminal-start', async (event, { cols, rows, key }) =>
   });
   activePty.onExit(({ exitCode }) => {
     activePty = null;
-    cleanupDecryptedCopy();
     if (!sender.isDestroyed()) sender.send('automaxkg-terminal-exit', { exitCode });
   });
 
@@ -744,12 +733,17 @@ ipcMain.handle('automaxkg-terminal-kill', () => {
 ipcMain.handle('get-device-id', () => getDeviceId());
 
 ipcMain.handle('automaxkg-status', () => {
+  // Шифрование отключено (откат) — available теперь означает просто
+  // "файлы физически на месте", без проверки/требования шифрования.
+  // Важно: если у пользователя остался .encrypted-маркер от версии ДО
+  // отката (файлы зашифрованы или побиты неудачной расшифровкой) —
+  // present всё ещё true (бинарники физически есть под своими именами),
+  // но available нарочно false, чтобы ensureAutomaxKgReady заново скачал
+  // чистые открытые файлы вместо попытки использовать потенциально
+  // повреждённые — старая директория удаляется целиком в automaxkg-download.
   const present = isAutomaxKgPresent();
   return {
-    available: present && isAutomaxKgEncrypted(),
-    // Файлы уже скачаны, но остались от версии программы до появления
-    // шифрования — нужно зашифровать на месте, а не качать заново 3ГБ.
-    needsEncryption: present && !isAutomaxKgEncrypted(),
+    available: present && !isAutomaxKgEncrypted(),
   };
 });
 
@@ -820,12 +814,22 @@ ipcMain.handle('automaxkg-download', async (event, { files, key }) => {
     return { ok: false, error: err.message };
   }
 
+  // ШИФРОВАНИЕ ОТКЛЮЧЕНО (откат): на нескольких разных марках машин
+  // (CHANGAN Q05, CHANGAN CS75 PRO) расшифровка перед запуском стабильно
+  // давала нечитаемый файл и AUTOMAX KG падала с кодом 255, блокируя
+  // реальную работу учеников. Первопричина не установлена на момент
+  // отката (наш собственный round-trip тест на другой машине проходил
+  // чисто — то есть проблема, судя по всему, зависит от конкретного
+  // окружения, которое мы не смогли воспроизвести локально) — возвращать
+  // шифрование стоит отдельным заходом, с тщательным тестированием именно
+  // на затронутых машинах, а не сейчас под давлением сломанного бизнеса.
+  // Файлы остаются на диске в открытом виде — просто переносим их из
+  // staging в рабочую директорию.
   try {
     fs.rmSync(AUTOMAXKG_DIR, { recursive: true, force: true });
-    await encryptDirInto(AUTOMAXKG_STAGING_DIR, AUTOMAXKG_DIR, keyHexToBuffer(key));
-    fs.writeFileSync(AUTOMAXKG_ENCRYPTED_MARKER, '');
+    fs.renameSync(AUTOMAXKG_STAGING_DIR, AUTOMAXKG_DIR);
   } catch (err) {
-    return { ok: false, error: `Не удалось зашифровать файлы: ${err.message}` };
+    return { ok: false, error: `Не удалось сохранить файлы: ${err.message}` };
   }
 
   try {
@@ -835,21 +839,6 @@ ipcMain.handle('automaxkg-download', async (event, { files, key }) => {
   }
 
   return { ok: true };
-});
-
-// Миграция: файлы AUTOMAX KG уже есть на диске в ОТКРЫТОМ виде (скачаны до
-// появления шифрования) — шифруем на месте, без повторного скачивания 3ГБ.
-ipcMain.handle('automaxkg-encrypt-existing', async (_event, { key }) => {
-  // Та же защита — осиротевший adb.exe с предыдущего запуска держит свой
-  // .exe и загруженные DLL заблокированными, шифрование "на месте" падает
-  // на переименовании именно этих файлов независимо от числа ретраев.
-  killOrphanedAdbProcesses();
-  try {
-    await encryptInPlace(AUTOMAXKG_DIR, keyHexToBuffer(key));
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
 });
 
 ipcMain.handle('open-external', async (_event, url) => {

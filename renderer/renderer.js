@@ -156,7 +156,11 @@ async function fetchEncryptionKey(loginToken) {
 }
 
 async function ensureAutomaxKgReady(loginToken) {
-  const { available, needsEncryption } = await window.automaxkg.status();
+  // Шифрование отключено (откат) — available:false теперь означает и
+  // "файлов ещё нет" (новый компьютер), и "остались от версии с
+  // шифрованием, нужно перекачать чистые" (main.js сам различает и в
+  // обоих случаях заново скачивает файлы с нуля в открытом виде).
+  const { available } = await window.automaxkg.status();
   if (available) return true;
 
   pendingLoginToken = loginToken;
@@ -166,21 +170,10 @@ async function ensureAutomaxKgReady(loginToken) {
   downloadProgressFill.style.width = '0%';
 
   try {
-    if (needsEncryption) {
-      // Файлы уже были скачаны раньше, до появления шифрования — шифруем их
-      // на месте, без повторного скачивания ~3ГБ с нуля.
-      downloadProgressText.textContent = 'Защищаем файлы на диске (один раз)...';
-      const key = await fetchEncryptionKey(loginToken);
-      const result = await window.automaxkg.encryptExisting(key);
-      if (!result.ok) throw new Error(result.error);
-      return true;
-    }
-
     downloadProgressText.textContent = 'Подготовка списка файлов...';
     const { files } = await callFunction('automaxkg-manifest', { loginToken });
     downloadProgressText.textContent = `Скачано 0 из ${files.length} файлов (0%)`;
-    const key = await fetchEncryptionKey(loginToken);
-    const result = await window.automaxkg.download(files, key);
+    const result = await window.automaxkg.download(files);
     if (!result.ok) throw new Error(result.error);
     return true;
   } catch (err) {
@@ -566,23 +559,8 @@ async function enterTerminalScreen(carSess, loginToken) {
   term.onData((data) => window.automaxkg.sendInput(data));
   window.addEventListener('resize', handleTerminalResize);
 
-  // Ключ запрашивается заново перед КАЖДЫМ запуском (не переиспользуем
-  // старый) — сервер каждый раз заново проверяет, что сессия всё ещё
-  // approved и пользователь не кикнут, прежде чем его выдать. Затем main.js
-  // расшифровывает файлы во временную рабочую копию — это занимает
-  // заметное время (~20 сек на 3ГБ на обычном SSD), поэтому явно показываем
-  // статус, а не оставляем пустой экран.
   terminalStatus.textContent = 'Подготовка AUTOMAX KG...';
-  let key;
-  try {
-    key = await fetchEncryptionKey(loginToken);
-  } catch (err) {
-    term.write(`\r\n[Не удалось получить ключ доступа: ${err.message}]\r\n`);
-    terminalStatus.textContent = 'Не удалось получить ключ доступа: ' + err.message;
-    return;
-  }
-
-  const result = await window.automaxkg.startTerminal(term.cols, term.rows, key);
+  const result = await window.automaxkg.startTerminal(term.cols, term.rows);
   terminalStatus.textContent = '';
   if (!result.ok) {
     term.write(`\r\n[Ошибка запуска AUTOMAX KG: ${result.error}]\r\n`);
