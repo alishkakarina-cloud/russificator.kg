@@ -23,9 +23,6 @@
     <p id="login-password-status" class="status"></p>
     <button id="show-register-btn" class="secondary-btn">Зарегистрироваться</button>
 
-    <div class="login-divider"><span>или</span></div>
-
-    <button id="telegram-login-btn" class="secondary-btn">Войти через Telegram (для админов)</button>
     <button id="update-available-btn" class="update-btn" hidden>
       <span id="update-btn-progress" class="update-btn-progress"></span>
       <span class="update-btn-content">
@@ -94,6 +91,7 @@
   <main class="screen" id="screen-main" hidden>
     <button id="admin-open-btn" class="admin-open-btn">Админ панель</button>
     <button id="support-open-btn" class="support-open-btn">Написать администратору</button>
+    <button id="logout-btn" class="logout-btn">Выйти</button>
     <h1>russificator.kg</h1>
     <p class="subtitle">Русификация автомобилей</p>
 
@@ -103,7 +101,7 @@
     </div>
 
     <div id="car-picker">
-      <button id="car-dropdown-btn" class="primary-btn">Выбрать марку/модель</button>
+      <button id="car-dropdown-btn" class="primary-btn">Начать работу</button>
       <div id="car-dropdown-list" class="dropdown-list" hidden></div>
     </div>
 
@@ -114,6 +112,7 @@
     <p id="status" class="status"></p>
 
     <button id="finish-session-btn" class="finish-btn" hidden>Завершено</button>
+    <button id="car-activate-btn" class="activate-btn" hidden>Активация</button>
   </main>
 
   <main class="screen" id="screen-terminal" hidden>
@@ -205,6 +204,7 @@
   <script src="config.js"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
+  <script src="vendor/addon-webgl.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

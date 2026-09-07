@@ -30,6 +30,11 @@ let pollTimer = null;
 // Пока это не null — кик/истечение сессии не разлогинивают принудительно
 // (см. touchSessionOrKick), только "Завершено" её закрывает.
 let activeCarSession = null;
+// Марка/модель, выбранная в списке, но ещё не подтверждённая кнопкой
+// "Активация" — car_session на сервере ещё не создана, AUTOMAX KG ещё не
+// запущена. Отдельно от activeCarSession (та означает "работа уже реально
+// идёт").
+let selectedCarModel = null;
 
 function showScreen(name) {
   for (const key of Object.keys(screens)) {
@@ -234,20 +239,6 @@ function startPolling(token) {
   }, POLL_INTERVAL_MS);
 }
 
-async function beginTelegramLogin() {
-  loginStatus.textContent = '';
-  try {
-    const token = await startTelegramLoginToken();
-    localStorage.setItem(STORAGE_KEY, token);
-    await window.app.openExternal(`https://t.me/${BOT_USERNAME}?start=${token}`);
-    showScreen('waiting');
-    applyStatus({ status: 'pending_telegram' });
-    startPolling(token);
-  } catch (err) {
-    loginStatus.textContent = 'Ошибка входа: ' + err.message;
-  }
-}
-
 function cancelLogin() {
   stopPolling();
   localStorage.removeItem(STORAGE_KEY);
@@ -416,7 +407,16 @@ async function tryLocalSession() {
   }
   if (!session) return false;
 
-  const trusted = await isTrustedUser(session.loginToken);
+  // Оба запроса независимы (ни один не использует результат другого) —
+  // запускаем параллельно вместо друг за другом, это отдаёт главный экран
+  // на один сетевой круг быстрее при каждом старте/резюме приложения.
+  const [trusted, blocked] = await Promise.all([
+    isTrustedUser(session.loginToken),
+    isBlocked(session.telegramId).catch((err) => {
+      console.error('Проверка блокировки не удалась, продолжаем офлайн', err);
+      return false;
+    }),
+  ]);
 
   if (!trusted && Date.now() - session.lastActivityAt > SESSION_MS) {
     // loginToken остаётся approved на сервере навсегда — 20 минут это только
@@ -431,13 +431,9 @@ async function tryLocalSession() {
     return false;
   }
 
-  try {
-    if (await isBlocked(session.telegramId)) {
-      await window.sessionStore.clear();
-      return false;
-    }
-  } catch (err) {
-    console.error('Проверка блокировки не удалась, продолжаем офлайн', err);
+  if (blocked) {
+    await window.sessionStore.clear();
+    return false;
   }
 
   // Раньше здесь стоял sessionStore.touch() — "продлевал" 20-минутное окно
@@ -480,6 +476,7 @@ async function resumeExistingSession() {
 const carDropdownBtn = document.getElementById('car-dropdown-btn');
 const carDropdownList = document.getElementById('car-dropdown-list');
 const carPicker = document.getElementById('car-picker');
+const carActivateBtn = document.getElementById('car-activate-btn');
 const activeSessionBox = document.getElementById('active-session');
 const activeSessionLabel = document.getElementById('active-session-label');
 const finishBtn = document.getElementById('finish-session-btn');
@@ -511,6 +508,25 @@ window.automaxkg.onTerminalExit(({ exitCode }) => {
   if (term) term.write(`\r\n\r\n[Процесс AUTOMAX KG завершён, код выхода ${exitCode}]\r\n`);
 });
 
+// AUTOMAX KG может печатать много вывода (лог прошивки), а обычный
+// DOM-рендер xterm.js перерисовывает каждую строку через реальные элементы
+// DOM — при активном выводе это заметно тормозит. WebGL-рендер рисует текст
+// на GPU и ощутимо быстрее, но доступен не на всех машинах (старые видеокарты,
+// драйверы, виртуалки). Если WebGL недоступен или контекст потерян прямо во
+// время работы — тихо откатываемся на обычный DOM-рендер, не роняя терминал:
+// это чисто способ отрисовки, на передачу данных в/из AUTOMAX KG не влияет.
+function enableWebglRendererIfPossible(terminal) {
+  try {
+    const webglAddon = new WebglAddon.WebglAddon();
+    webglAddon.onContextLoss(() => {
+      webglAddon.dispose();
+    });
+    terminal.loadAddon(webglAddon);
+  } catch (err) {
+    console.error('WebGL-рендер терминала недоступен, используется обычный', err);
+  }
+}
+
 function handleTerminalResize() {
   if (!term || !fitAddon) return;
   fitAddon.fit();
@@ -533,6 +549,7 @@ async function enterTerminalScreen(carSess, loginToken) {
   term.loadAddon(fitAddon);
   term.open(terminalContainer);
   fitAddon.fit();
+  enableWebglRendererIfPossible(term);
   // Каждое нажатие клавиши уходит процессу как есть — это просто
   // "окно-зеркало" на управляемый процесс, без разбора смысла ввода/вывода.
   term.onData((data) => window.automaxkg.sendInput(data));
@@ -766,7 +783,7 @@ async function toggleCarDropdown() {
     const item = document.createElement('div');
     item.className = 'dropdown-item';
     item.innerHTML = `<span>${m.brand} ${m.model}</span><span class="price">${m.price} сом</span>`;
-    item.addEventListener('click', () => selectCarModel(m));
+    item.addEventListener('click', () => chooseCarModel(m));
     carDropdownList.appendChild(item);
   }
   carDropdownList.hidden = false;
@@ -776,31 +793,58 @@ document.addEventListener('click', (e) => {
   if (!carPicker.contains(e.target)) carDropdownList.hidden = true;
 });
 
-async function selectCarModel(model) {
+// Клик по строке списка — только выбор (марка+модель одной строкой, как и
+// была устроена сама механика списка, её не трогаем). Реальный запуск
+// (car_session на сервере + AUTOMAX KG) происходит отдельно, по кнопке
+// "Активация" — см. activateSelectedCar ниже.
+function chooseCarModel(model) {
   carDropdownList.hidden = true;
+  selectedCarModel = model;
+  carDropdownBtn.textContent = `${model.brand} ${model.model} ✓`;
+  carActivateBtn.hidden = false;
+  status.textContent = '';
+}
+
+async function activateSelectedCar() {
+  if (!selectedCarModel) return;
+  const model = selectedCarModel;
   const session = await window.sessionStore.get();
   if (!session) {
     showScreen('login');
     return;
   }
+  carActivateBtn.disabled = true;
   status.textContent = 'Запуск...';
   try {
+    // Тот же диплинк и та же проверка (только t.me/ ссылки, см. main.js), что
+    // уже используется для входа — просто открывает бота, без каких-либо
+    // параметров и без завязки на конкретную сессию/одобрение.
+    await window.app.openExternal(`https://t.me/${BOT_USERNAME}`).catch((e) => console.error('Не удалось открыть Telegram', e));
+
     const { session: carSess } = await carSession('start', {
       loginToken: session.loginToken,
       brand: model.brand,
       model: model.model,
     });
     activeCarSession = carSess;
+    selectedCarModel = null;
+    carDropdownBtn.textContent = 'Начать работу';
+    carActivateBtn.hidden = true;
     status.textContent = '';
     await enterTerminalScreen(carSess, session.loginToken);
   } catch (err) {
     if (err.status === 409 && err.data && err.data.session) {
       activeCarSession = err.data.session;
+      selectedCarModel = null;
+      carDropdownBtn.textContent = 'Начать работу';
+      carActivateBtn.hidden = true;
       renderActiveSession();
       status.textContent = 'Уже есть незавершённая работа — сначала нажмите «Завершено».';
     } else {
       status.textContent = 'Ошибка: ' + err.message;
     }
+  } finally {
+    carActivateBtn.disabled = false;
   }
 }
 
@@ -810,10 +854,12 @@ function renderActiveSession() {
     activeSessionBox.hidden = false;
     activeSessionLabel.textContent = `${activeCarSession.brand} ${activeCarSession.model}`;
     finishBtn.hidden = false;
+    carActivateBtn.hidden = true;
   } else {
     carPicker.hidden = false;
     activeSessionBox.hidden = true;
     finishBtn.hidden = true;
+    carActivateBtn.hidden = !selectedCarModel;
   }
 }
 
@@ -867,6 +913,8 @@ async function initMainScreen() {
   // (admin-action) по фактическим правам, независимо от того, кто её видит.
   const session = await window.sessionStore.get();
   activeCarSession = null;
+  selectedCarModel = null;
+  carDropdownBtn.textContent = 'Начать работу';
   if (session) {
     try {
       const { session: stale } = await carSession('get_active', { loginToken: session.loginToken });
@@ -927,11 +975,40 @@ function stopHeartbeat() {
   }
 }
 
+// ------------------------- Кнопка "Выйти" -------------------------
+// Полная добровольная деавторизация по явному действию пользователя — в
+// отличие от forceExpireSession/forceKickSession выше (те принудительные).
+// Если сейчас открыта работа с машиной — не рвём её молча, тот же принцип,
+// что и у диалога закрытия окна в main.js (mainWindow.on('close', ...)):
+// спрашиваем подтверждение, а не действуем без предупреждения.
+async function logout() {
+  if (activeCarSession && !confirm('Сейчас открыта работа с машиной. Всё равно выйти из аккаунта?')) {
+    return;
+  }
+
+  stopSessionTimer();
+  stopHeartbeat();
+  stopKickPoll();
+  stopPolling();
+
+  localStorage.removeItem(STORAGE_KEY);
+  await window.sessionStore.clear().catch((e) => console.error('Не удалось очистить локальную сессию при выходе', e));
+  await window.app.setAdminMode(false).catch(() => {});
+  await window.app.setTerminalMode(false).catch(() => {});
+
+  selectedCarModel = null;
+  carDropdownBtn.textContent = 'Начать работу';
+  carActivateBtn.hidden = true;
+
+  showScreen('login');
+}
+
 carDropdownBtn.addEventListener('click', toggleCarDropdown);
+carActivateBtn.addEventListener('click', activateSelectedCar);
 finishBtn.addEventListener('click', finishSession);
 terminalFinishBtn.addEventListener('click', finishSession);
+document.getElementById('logout-btn').addEventListener('click', logout);
 
-document.getElementById('telegram-login-btn').addEventListener('click', beginTelegramLogin);
 document.getElementById('cancel-login-btn').addEventListener('click', cancelLogin);
 document.getElementById('retry-login-btn').addEventListener('click', retryLogin);
 
@@ -993,7 +1070,6 @@ window.app.onUpdateDownloadProgress(({ percent }) => {
 
 window.app.onUpdateDownloadError(() => {
   updateDownloadInProgress = false;
-  document.getElementById('telegram-login-btn').disabled = false;
   updateBtn.disabled = false;
   updateBtnSubtitle.textContent = 'Ошибка скачивания — нажмите ещё раз';
   updateBtnProgress.style.width = '0%';
@@ -1007,7 +1083,6 @@ async function startUpdateDownloadFlow() {
   updateDownloadInProgress = true;
   updateBtn.disabled = true;
   forcedUpdateBtn.disabled = true;
-  document.getElementById('telegram-login-btn').disabled = true;
   updateBtnSubtitle.textContent = 'Скачивание... 0%';
   updateBtnProgress.style.width = '0%';
   forcedUpdateBtnSubtitle.textContent = 'Скачивание... 0%';
@@ -1043,11 +1118,13 @@ function compareVersions(a, b) {
 
 async function checkForcedUpdate() {
   try {
-    const rows = await supabaseRequest('app_settings?key=eq.min_version&select=value');
+    const [rows, currentVersion] = await Promise.all([
+      supabaseRequest('app_settings?key=eq.min_version&select=value'),
+      window.app.getVersion(),
+    ]);
     const minVersion = rows && rows[0] ? rows[0].value : null;
     if (!minVersion) return false;
 
-    const currentVersion = await window.app.getVersion();
     if (compareVersions(currentVersion, minVersion) < 0) {
       showScreen('forcedUpdate');
       return true;

@@ -14,10 +14,20 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-// @TOGUZZ11 и @Wiqqq99 — оба равноправные администраторы.
-const ADMIN_CHAT_IDS = [7155433371, 8106761823];
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+// Список администраторов — таблица admin_usernames (юзернеймы, без "@",
+// в нижнем регистре), редактируется прямо в Supabase Dashboard без
+// передеплоя кода. Раньше здесь был захардкоженный список telegram-ID.
+async function isAdminUsername(username: string | null | undefined): Promise<boolean> {
+  if (!username) return false;
+  const { data } = await supabase
+    .from('admin_usernames')
+    .select('username')
+    .eq('username', username.toLowerCase())
+    .maybeSingle();
+  return Boolean(data);
+}
 
 // CORS нужен для мобильной веб-админки (admin.russificator.kg) — она вызывает
 // эту функцию из настоящего браузера с настоящим Origin, в отличие от
@@ -43,8 +53,9 @@ async function requireAdmin(adminToken: string): Promise<number | null> {
     .select('telegram_user, status')
     .eq('token', adminToken)
     .maybeSingle();
-  const id = data?.status === 'approved' ? data.telegram_user?.id : null;
-  return id && ADMIN_CHAT_IDS.includes(id) ? id : null;
+  if (data?.status !== 'approved' || !data.telegram_user?.id) return null;
+  const user = data.telegram_user as { id: number; username: string | null };
+  return (await isAdminUsername(user.username)) ? user.id : null;
 }
 
 Deno.serve(async (req) => {

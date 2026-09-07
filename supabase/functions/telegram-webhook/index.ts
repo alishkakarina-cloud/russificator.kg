@@ -20,10 +20,34 @@ const TELEGRAM_WEBHOOK_SECRET = Deno.env.get('TELEGRAM_WEBHOOK_SECRET')!;
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-// @TOGUZZ11 и @Wiqqq99 — оба равноправные администраторы.
-const ADMIN_CHAT_IDS = [7155433371, 8106761823];
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+// Список администраторов — таблица admin_usernames (юзернеймы, без "@", в
+// нижнем регистре), редактируется прямо в Supabase Dashboard без передеплоя
+// кода. Раньше здесь был захардкоженный список telegram-ID.
+async function isAdminUsername(username: string | null | undefined): Promise<boolean> {
+  if (!username) return false;
+  const { data } = await supabase
+    .from('admin_usernames')
+    .select('username')
+    .eq('username', username.toLowerCase())
+    .maybeSingle();
+  return Boolean(data);
+}
+
+// Для рассылки уведомлений (заявка на вход, /kick-команды) нужен обратный
+// путь: юзернейм -> telegram_id, а его знаем только для тех, кто хоть раз
+// нажимал /start у бота (telegram_users). Если новый админ ни разу не
+// открывал бота — уведомление ему отправить некому, это ожидаемо, не баг.
+async function getAdminTelegramIds(): Promise<number[]> {
+  const { data: admins } = await supabase.from('admin_usernames').select('username');
+  const adminSet = new Set((admins ?? []).map((a) => a.username.toLowerCase()));
+  if (!adminSet.size) return [];
+  const { data: users } = await supabase.from('telegram_users').select('telegram_id, username');
+  return (users ?? [])
+    .filter((u) => u.username && adminSet.has(u.username.toLowerCase()))
+    .map((u) => u.telegram_id);
+}
 
 function isFromTelegram(req: Request): boolean {
   return req.headers.get('x-telegram-bot-api-secret-token') === TELEGRAM_WEBHOOK_SECRET;
@@ -55,7 +79,7 @@ Deno.serve(async (req) => {
   //    приложение проверяет blocked_telegram_users при запуске и при
   //    продлении локальной сессии.
   const adminMessage = update.message;
-  if (adminMessage?.text && ADMIN_CHAT_IDS.includes(adminMessage.from?.id)) {
+  if (adminMessage?.text && (await isAdminUsername(adminMessage.from?.username))) {
     const kickMatch = adminMessage.text.match(/^\/(kick|unkick)\s+(\d+)/);
     if (kickMatch) {
       const [, cmd, idStr] = kickMatch;
@@ -232,7 +256,7 @@ Deno.serve(async (req) => {
         chat_id: from.id,
         text: 'Личность подтверждена. Заявка отправлена администратору — ожидайте решения.',
       });
-      for (const adminId of ADMIN_CHAT_IDS) {
+      for (const adminId of await getAdminTelegramIds()) {
         await tg('sendMessage', {
           chat_id: adminId,
           text: `Запрос на вход в russificator.kg\n${name} (${label})\nВремя: ${new Date().toLocaleString('ru-RU')}`,
@@ -259,7 +283,7 @@ Deno.serve(async (req) => {
     const adminId = cq.from.id;
     const [action, token] = (cq.data ?? '').split(':');
 
-    if (!ADMIN_CHAT_IDS.includes(adminId)) {
+    if (!(await isAdminUsername(cq.from.username))) {
       await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'Нет прав.', show_alert: true });
       return new Response(JSON.stringify({ ok: true }));
     }

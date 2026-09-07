@@ -147,3 +147,23 @@ create policy "anon can read app settings"
 insert into public.app_settings (key, value)
 values ('min_version', '1.0.0')
 on conflict (key) do nothing;
+
+-- Администраторы теперь по списку юзернеймов, а не по захардкоженным
+-- telegram-ID в коде трёх разных Edge Functions (admin-action,
+-- telegram-webhook, support-message — все теперь читают эту таблицу).
+-- username всегда хранится в нижнем регистре, без "@" — сверка тоже всегда
+-- по нижнему регистру, чтобы не зависеть от того, как юзернейм набран.
+-- Добавить нового админа — просто вставить сюда ещё одну строку, код
+-- переписывать не нужно. Никаких anon-политик — читают/пишут только
+-- Edge Functions через service_role.
+create table if not exists public.admin_usernames (
+  username text primary key,
+  added_at timestamptz not null default now()
+);
+
+alter table public.admin_usernames enable row level security;
+
+insert into public.admin_usernames (username) values
+  ('fxallish'),
+  ('wiqqq99')
+on conflict do nothing;

@@ -8,8 +8,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0f1115;
-  color: #f2f2f2;
+  /* Тёмно-синяя база + едва заметное свечение по краям — статичные
+     градиенты, без анимации и без доп. DOM-элементов, поэтому ничего не
+     стоит по производительности. */
+  background:
+    radial-gradient(ellipse 900px 560px at 50% -12%, rgba(34, 197, 94, 0.09), transparent 60%),
+    radial-gradient(ellipse 700px 500px at 105% 105%, rgba(59, 130, 246, 0.07), transparent 60%),
+    #0a0e1a;
+  background-attachment: fixed;
+  color: #f2f5fa;
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
@@ -23,12 +30,14 @@ body {
 h1 {
   margin: 0 0 4px;
   font-size: 24px;
+  font-weight: 700;
   letter-spacing: 0.5px;
+  text-shadow: 0 0 24px rgba(34, 197, 94, 0.35);
 }
 
 .subtitle {
   margin: 0 0 32px;
-  color: #9aa0a6;
+  color: #8a93a8;
   font-size: 14px;
 }
 
@@ -37,15 +46,18 @@ h1 {
   padding: 14px 16px;
   font-size: 15px;
   font-weight: 600;
-  color: #0f1115;
-  background: #4cd964;
+  color: #0a0e1a;
+  background: linear-gradient(135deg, #34d399, #16a34a);
   border: none;
   border-radius: 8px;
   cursor: pointer;
+  box-shadow: 0 4px 20px rgba(34, 197, 94, 0.35);
+  transition: box-shadow 0.2s ease;
 }
 
 .primary-btn:hover {
-  background: #3fc356;
+  background: linear-gradient(135deg, #22c55e, #15803d);
+  box-shadow: 0 6px 26px rgba(34, 197, 94, 0.48);
 }
 
 .primary-btn:active {
@@ -56,7 +68,7 @@ h1 {
   margin-top: 16px;
   min-height: 20px;
   font-size: 13px;
-  color: #9aa0a6;
+  color: #8a93a8;
 }
 
 /* Кнопка "Доступно новое обновление" на экране входа — появляется только
@@ -69,9 +81,9 @@ h1 {
   margin-top: 10px;
   padding: 11px 16px;
   border-radius: 8px;
-  border: 1px solid #2e7d46;
-  background: #16241a;
-  color: #f2f2f2;
+  border: 1px solid #1f6b45;
+  background: #122a20;
+  color: #f2f5fa;
   cursor: pointer;
   overflow: hidden;
   text-align: center;
@@ -87,7 +99,7 @@ h1 {
   left: 0;
   bottom: 0;
   width: 0%;
-  background: #2fbf60;
+  background: #34d399;
   transition: width 0.25s ease;
 }
 
@@ -105,32 +117,34 @@ h1 {
 
 .update-btn-subtitle {
   font-size: 11px;
-  color: #b8c2bb;
+  color: #a8b3c8;
 }
 
 .notice {
   text-align: left;
-  background: #1c2333;
-  border: 1px solid #2f3b56;
+  background: rgba(21, 33, 58, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   padding: 12px 14px;
   margin-bottom: 14px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
 }
 
 .notice p {
   margin: 0 0 8px;
   font-size: 12.5px;
   line-height: 1.5;
-  color: #c7d0e0;
+  color: #c9d6ef;
 }
 
 .notice-dismiss-btn {
   padding: 6px 12px;
   font-size: 12.5px;
   font-weight: 600;
-  color: #f2f2f2;
-  background: #2a3350;
-  border: 1px solid #3a4568;
+  color: #f2f5fa;
+  background: #1c2c4a;
+  border: 1px solid #2c3c60;
   border-radius: 6px;
   cursor: pointer;
 }
@@ -141,15 +155,15 @@ h1 {
   padding: 14px 16px;
   font-size: 15px;
   font-weight: 600;
-  color: #f2f2f2;
-  background: #23262f;
-  border: 1px solid #343844;
+  color: #f2f5fa;
+  background: #141a2e;
+  border: 1px solid #26314d;
   border-radius: 8px;
   cursor: pointer;
 }
 
 .secondary-btn:hover:not(:disabled) {
-  background: #2b2f3a;
+  background: #1c2540;
 }
 
 .secondary-btn:disabled {
@@ -161,8 +175,8 @@ h1 {
   width: 32px;
   height: 32px;
   margin: 0 auto 20px;
-  border: 3px solid #343844;
-  border-top-color: #4cd964;
+  border: 3px solid #26314d;
+  border-top-color: #22c55e;
   border-radius: 50%;
   animation: spin 0.9s linear infinite;
 }
@@ -177,8 +191,8 @@ h1 {
   width: 100%;
   height: 8px;
   margin-top: 18px;
-  background: #23262f;
-  border: 1px solid #343844;
+  background: #141a2e;
+  border: 1px solid #26314d;
   border-radius: 999px;
   overflow: hidden;
 }
@@ -186,7 +200,7 @@ h1 {
 .progress-bar-fill {
   height: 100%;
   width: 0%;
-  background: #4cd964;
+  background: #22c55e;
   transition: width 0.25s ease;
 }
 
@@ -195,7 +209,7 @@ h1 {
   right: 10px;
   bottom: 8px;
   font-size: 11px;
-  color: #5a606b;
+  color: #5f6b85;
   user-select: none;
 }
 
@@ -218,16 +232,16 @@ h1 {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   border-radius: 7px;
-  border: 1px solid #343844;
-  background: #23262f;
-  color: #9aa0a6;
+  border: 1px solid #26314d;
+  background: #141a2e;
+  color: #8a93a8;
   z-index: 20;
 }
 
 .session-timer.warn {
-  color: #ff8a8a;
-  border-color: #5a2a2a;
-  background: #2a1f22;
+  color: #fca5a5;
+  border-color: #4a1f24;
+  background: #2a1520;
 }
 
 .admin-open-btn {
@@ -240,16 +254,16 @@ h1 {
   font-size: 12px;
   font-weight: 600;
   border-radius: 7px;
-  border: 1px solid #343844;
-  background: #23262f;
-  color: #9aa0a6;
+  border: 1px solid #26314d;
+  background: #141a2e;
+  color: #8a93a8;
   cursor: pointer;
   z-index: 20;
 }
 
 .admin-open-btn:hover {
-  background: #2b2f3a;
-  color: #f2f2f2;
+  background: #1c2540;
+  color: #f2f5fa;
 }
 
 .support-open-btn {
@@ -262,16 +276,38 @@ h1 {
   font-size: 12px;
   font-weight: 600;
   border-radius: 7px;
-  border: 1px solid #343844;
-  background: #23262f;
-  color: #9aa0a6;
+  border: 1px solid #26314d;
+  background: #141a2e;
+  color: #8a93a8;
   cursor: pointer;
   z-index: 20;
 }
 
 .support-open-btn:hover {
-  background: #2b2f3a;
-  color: #f2f2f2;
+  background: #1c2540;
+  color: #f2f5fa;
+}
+
+.logout-btn {
+  /* Четвёртая кнопка в правом верхнем углу, ниже .support-open-btn — та же
+     логика, что и в комментарии выше про session-timer. */
+  position: fixed;
+  top: 132px;
+  right: 18px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 7px;
+  border: 1px solid #26314d;
+  background: #141a2e;
+  color: #8a93a8;
+  cursor: pointer;
+  z-index: 20;
+}
+
+.logout-btn:hover {
+  background: #3a1e22;
+  color: #f87171;
 }
 
 #car-picker {
@@ -288,12 +324,14 @@ h1 {
   left: 0;
   right: 0;
   margin-top: 8px;
-  background: #1a1c22;
-  border: 1px solid #343844;
+  background: rgba(14, 20, 36, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   overflow: hidden;
   z-index: 5;
   text-align: left;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
 .dropdown-item {
@@ -303,7 +341,7 @@ h1 {
   padding: 12px 14px;
   cursor: pointer;
   font-size: 14px;
-  border-bottom: 1px solid #26292f;
+  border-bottom: 1px solid #182034;
 }
 
 .dropdown-item:last-child {
@@ -311,11 +349,11 @@ h1 {
 }
 
 .dropdown-item:hover {
-  background: #23262f;
+  background: #141a2e;
 }
 
 .dropdown-item .price {
-  color: #9aa0a6;
+  color: #8a93a8;
   white-space: nowrap;
 }
 
@@ -330,15 +368,39 @@ h1 {
   padding: 12px 18px;
   font-size: 14px;
   font-weight: 600;
-  color: #0f1115;
-  background: #f2c94c;
+  color: #0a0e1a;
+  background: #fbbf24;
   border: none;
   border-radius: 8px;
   cursor: pointer;
 }
 
+.activate-btn {
+  position: fixed;
+  right: 16px;
+  bottom: 32px;
+  padding: 12px 22px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0a0e1a;
+  background: linear-gradient(135deg, #34d399, #16a34a);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4);
+  transition: box-shadow 0.2s ease, transform 0.05s ease;
+}
+
+.activate-btn:hover {
+  box-shadow: 0 6px 26px rgba(34, 197, 94, 0.55);
+}
+
+.activate-btn:active {
+  transform: translateY(1px);
+}
+
 .finish-btn:hover {
-  background: #e0ba3f;
+  background: #d97706;
 }
 
 /* ---------------------------- Админ-панель ---------------------------- */
@@ -371,8 +433,8 @@ h1 {
   flex-direction: column;
   gap: 4px;
   padding: 20px 14px;
-  background: #14161b;
-  border-right: 1px solid #23262f;
+  background: #0b0f1c;
+  border-right: 1px solid #141a2e;
 }
 
 .admin-back-btn {
@@ -381,16 +443,16 @@ h1 {
   padding: 7px 12px;
   font-size: 12px;
   font-weight: 600;
-  color: #9aa0a6;
+  color: #8a93a8;
   background: transparent;
-  border: 1px solid #343844;
+  border: 1px solid #26314d;
   border-radius: 7px;
   cursor: pointer;
 }
 
 .admin-back-btn:hover {
-  color: #f2f2f2;
-  background: #23262f;
+  color: #f2f5fa;
+  background: #141a2e;
 }
 
 .admin-nav {
@@ -404,7 +466,7 @@ h1 {
   padding: 10px 12px;
   font-size: 14px;
   font-weight: 600;
-  color: #9aa0a6;
+  color: #8a93a8;
   background: transparent;
   border: none;
   border-radius: 8px;
@@ -412,13 +474,13 @@ h1 {
 }
 
 .admin-nav-btn:hover {
-  background: #1c1f26;
-  color: #f2f2f2;
+  background: #131a2c;
+  color: #f2f5fa;
 }
 
 .admin-nav-btn.active {
-  color: #0f1115;
-  background: #4cd964;
+  color: #0a0e1a;
+  background: #22c55e;
 }
 
 /* Контекстный контрол "Дата" живёт прямо под пунктом "История" в навигации —
@@ -436,20 +498,20 @@ h1 {
   width: 100%;
   padding: 6px 10px;
   font-size: 12px;
-  color: #9aa0a6;
-  background: #1c1f26;
-  border: 1px solid #2a2e37;
+  color: #8a93a8;
+  background: #131a2c;
+  border: 1px solid #1a2338;
   border-radius: 6px;
   cursor: pointer;
 }
 
 .date-picker-btn:hover {
-  border-color: #3a3f4a;
-  color: #f2f2f2;
+  border-color: #2a3450;
+  color: #f2f5fa;
 }
 
 .date-picker-caption {
-  color: #5a606b;
+  color: #5f6b85;
 }
 
 .calendar-popover {
@@ -459,10 +521,11 @@ h1 {
   z-index: 10;
   width: 240px;
   padding: 12px;
-  background: #1a1c22;
-  border: 1px solid #343844;
+  background: rgba(14, 20, 36, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px);
 }
 
 .calendar-header {
@@ -478,9 +541,9 @@ h1 {
   width: 24px;
   height: 24px;
   border-radius: 6px;
-  border: 1px solid #343844;
-  background: #23262f;
-  color: #f2f2f2;
+  border: 1px solid #26314d;
+  background: #141a2e;
+  color: #f2f5fa;
   cursor: pointer;
 }
 
@@ -492,7 +555,7 @@ h1 {
 
 .calendar-dow {
   font-size: 10px;
-  color: #5a606b;
+  color: #5f6b85;
   text-align: center;
   padding: 3px 0;
 }
@@ -506,11 +569,11 @@ h1 {
   font-size: 12px;
   cursor: pointer;
   border: 1px solid transparent;
-  color: #f2f2f2;
+  color: #f2f5fa;
 }
 
 .calendar-day:hover {
-  background: #23262f;
+  background: #141a2e;
 }
 
 .calendar-day.empty {
@@ -518,12 +581,12 @@ h1 {
 }
 
 .calendar-day.today {
-  border-color: #4cd964;
+  border-color: #22c55e;
 }
 
 .calendar-day.selected {
-  background: #4cd964;
-  color: #0f1115;
+  background: #22c55e;
+  color: #0a0e1a;
   font-weight: 700;
 }
 
@@ -558,7 +621,7 @@ h1 {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  border: 1px solid #23262f;
+  border: 1px solid #141a2e;
   border-radius: 10px;
 }
 
@@ -578,16 +641,16 @@ h1 {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #5a606b;
-  background: #14161b;
-  border-bottom: 1px solid #23262f;
+  color: #5f6b85;
+  background: #0b0f1c;
+  border-bottom: 1px solid #141a2e;
   position: sticky;
   top: 0;
 }
 
 .session-row {
   font-size: 13px;
-  border-bottom: 1px solid #1a1c22;
+  border-bottom: 1px solid #0e1424;
 }
 
 .session-row:last-child {
@@ -595,7 +658,7 @@ h1 {
 }
 
 .session-row:hover {
-  background: #15171c;
+  background: #0c111f;
 }
 
 .session-row .col {
@@ -610,7 +673,7 @@ h1 {
 }
 
 .session-row .col-muted {
-  color: #9aa0a6;
+  color: #8a93a8;
 }
 
 .paid-toggle {
@@ -626,9 +689,9 @@ h1 {
   gap: 6px;
   padding: 5px 10px 5px 8px;
   border-radius: 20px;
-  border: 1px solid #343844;
-  background: #23262f;
-  color: #9aa0a6;
+  border: 1px solid #26314d;
+  background: #141a2e;
+  color: #8a93a8;
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
@@ -639,26 +702,26 @@ h1 {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #5a606b;
+  background: #5f6b85;
   flex-shrink: 0;
 }
 
 .paid-toggle-btn.paid {
-  border-color: #2f6b3d;
-  color: #4cd964;
+  border-color: #1e6b45;
+  color: #22c55e;
 }
 
 .paid-toggle-btn.paid .paid-dot-icon {
-  background: #4cd964;
+  background: #22c55e;
 }
 
 .paid-toggle-btn.unpaid {
-  border-color: #7a3636;
-  color: #e88;
+  border-color: #7a2e33;
+  color: #f87171;
 }
 
 .paid-toggle-btn.unpaid .paid-dot-icon {
-  background: #e05555;
+  background: #ef4444;
 }
 
 .paid-options {
@@ -667,8 +730,8 @@ h1 {
   top: 30px;
   flex-direction: column;
   gap: 4px;
-  background: #1a1c22;
-  border: 1px solid #343844;
+  background: #0e1424;
+  border: 1px solid #26314d;
   border-radius: 10px;
   padding: 6px;
   z-index: 5;
@@ -686,7 +749,7 @@ h1 {
   border-radius: 6px;
   border: none;
   background: transparent;
-  color: #f2f2f2;
+  color: #f2f5fa;
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -694,7 +757,7 @@ h1 {
 }
 
 .paid-choice:hover {
-  background: #23262f;
+  background: #141a2e;
 }
 
 .paid-choice .paid-dot-icon {
@@ -703,15 +766,15 @@ h1 {
 }
 
 .paid-choice.green .paid-dot-icon {
-  background: #4cd964;
+  background: #22c55e;
 }
 
 .paid-choice.red .paid-dot-icon {
-  background: #e05555;
+  background: #ef4444;
 }
 
 .empty-note {
-  color: #5a606b;
+  color: #5f6b85;
   font-size: 13px;
   padding: 16px;
 }
@@ -730,23 +793,23 @@ h1 {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #9aa0a6;
+  color: #8a93a8;
 }
 
 .online-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #5a606b;
+  background: #5f6b85;
   flex-shrink: 0;
 }
 
 .online-indicator.online .online-dot {
-  background: #4cd964;
+  background: #22c55e;
 }
 
 .online-indicator.online {
-  color: #4cd964;
+  color: #22c55e;
 }
 
 .user-header-row {
@@ -754,14 +817,14 @@ h1 {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #5a606b;
-  background: #14161b;
-  border-bottom: 1px solid #23262f;
+  color: #5f6b85;
+  background: #0b0f1c;
+  border-bottom: 1px solid #141a2e;
 }
 
 .user-row {
   font-size: 13px;
-  border-bottom: 1px solid #1a1c22;
+  border-bottom: 1px solid #0e1424;
 }
 
 .user-row:last-child {
@@ -769,7 +832,7 @@ h1 {
 }
 
 .user-row:hover {
-  background: #15171c;
+  background: #0c111f;
 }
 
 .user-row .col-name {
@@ -781,7 +844,7 @@ h1 {
 }
 
 .user-row .col-name .username {
-  color: #9aa0a6;
+  color: #8a93a8;
   font-weight: 400;
   margin-left: 6px;
 }
@@ -793,21 +856,21 @@ h1 {
   font-size: 12px;
   font-weight: 600;
   border-radius: 6px;
-  border: 1px solid #343844;
-  background: #23262f;
-  color: #9aa0a6;
+  border: 1px solid #26314d;
+  background: #141a2e;
+  color: #8a93a8;
   cursor: pointer;
 }
 
 .trusted-toggle-btn.on {
-  background: #4cd964;
-  border-color: #4cd964;
-  color: #0f1115;
+  background: #22c55e;
+  border-color: #22c55e;
+  color: #0a0e1a;
 }
 
 .kick-toggle-btn.blocked {
-  background: #e05555;
-  border-color: #e05555;
+  background: #ef4444;
+  border-color: #ef4444;
   color: #fff;
 }
 
@@ -835,11 +898,12 @@ h1 {
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  background: #17191f;
-  border: 1px solid #343844;
+  background: rgba(15, 21, 38, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
   overflow: hidden;
+  backdrop-filter: blur(14px);
 }
 
 .modal-header {
@@ -847,7 +911,7 @@ h1 {
   align-items: center;
   justify-content: space-between;
   padding: 16px 18px;
-  border-bottom: 1px solid #23262f;
+  border-bottom: 1px solid #141a2e;
 }
 
 .modal-header h3 {
@@ -859,15 +923,15 @@ h1 {
   width: 26px;
   height: 26px;
   border-radius: 6px;
-  border: 1px solid #343844;
-  background: #23262f;
-  color: #9aa0a6;
+  border: 1px solid #26314d;
+  background: #141a2e;
+  color: #8a93a8;
   cursor: pointer;
 }
 
 .modal-close-btn:hover {
-  color: #f2f2f2;
-  background: #2b2f3a;
+  color: #f2f5fa;
+  background: #1c2540;
 }
 
 .event-log {
@@ -880,7 +944,7 @@ h1 {
   grid-template-columns: 130px 1fr;
   gap: 4px 12px;
   padding: 9px 18px;
-  border-bottom: 1px solid #1e2127;
+  border-bottom: 1px solid #131a2c;
   font-size: 13px;
 }
 
@@ -889,7 +953,7 @@ h1 {
 }
 
 .event-time {
-  color: #5a606b;
+  color: #5f6b85;
   font-size: 11px;
   white-space: nowrap;
 }
@@ -900,7 +964,7 @@ h1 {
 
 .event-detail {
   grid-column: 2;
-  color: #9aa0a6;
+  color: #8a93a8;
   font-size: 12px;
 }
 
@@ -925,14 +989,14 @@ h1 {
   margin-bottom: 10px;
   font-size: 13px;
   font-weight: 600;
-  color: #9aa0a6;
+  color: #8a93a8;
 }
 
 #terminal-container {
   flex: 1;
   min-height: 0;
-  background: #0d0f14;
-  border: 1px solid #23262f;
+  background: #080b14;
+  border: 1px solid #141a2e;
   border-radius: 8px;
   padding: 8px;
   overflow: hidden;
@@ -971,7 +1035,7 @@ h1 {
 .support-title {
   font-size: 14px;
   font-weight: 600;
-  color: #f2f2f2;
+  color: #f2f5fa;
 }
 
 .support-messages {
@@ -994,14 +1058,14 @@ h1 {
 
 .support-message.from-user {
   align-self: flex-end;
-  background: #2b6ef2;
+  background: #3b82f6;
   color: #fff;
 }
 
 .support-message.from-admin {
   align-self: flex-start;
-  background: #23262f;
-  color: #f2f2f2;
+  background: #141a2e;
+  color: #f2f5fa;
 }
 
 .support-message-time {
@@ -1020,10 +1084,10 @@ h1 {
 .support-textarea {
   flex: 1;
   resize: none;
-  background: #1a1d24;
-  border: 1px solid #343844;
+  background: #121a2c;
+  border: 1px solid #26314d;
   border-radius: 8px;
-  color: #f2f2f2;
+  color: #f2f5fa;
   padding: 8px 10px;
   font-family: inherit;
   font-size: 13px;
@@ -1047,22 +1111,22 @@ h1 {
   width: 220px;
   flex-shrink: 0;
   overflow-y: auto;
-  border: 1px solid #23262f;
+  border: 1px solid #141a2e;
   border-radius: 10px;
 }
 
 .chat-thread-row {
   padding: 10px 12px;
-  border-bottom: 1px solid #23262f;
+  border-bottom: 1px solid #141a2e;
   cursor: pointer;
 }
 
 .chat-thread-row:hover {
-  background: #1a1d24;
+  background: #121a2c;
 }
 
 .chat-thread-row.active {
-  background: #23262f;
+  background: #141a2e;
 }
 
 .chat-thread-name {
@@ -1072,7 +1136,7 @@ h1 {
 
 .chat-thread-preview {
   font-size: 12px;
-  color: #9aa0a6;
+  color: #8a93a8;
   margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -1084,7 +1148,7 @@ h1 {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid #23262f;
+  border: 1px solid #141a2e;
   border-radius: 10px;
   padding: 14px;
 }
@@ -1093,7 +1157,7 @@ h1 {
   font-weight: 600;
   margin-bottom: 10px;
   flex-shrink: 0;
-  color: #f2f2f2;
+  color: #f2f5fa;
 }
 
 .chat-conversation-messages {
@@ -1132,10 +1196,10 @@ h1 {
   flex: 1;
   padding: 10px 12px;
   font-size: 13px;
-  background: #15171c;
-  border: 1px solid #23262f;
+  background: #0c111f;
+  border: 1px solid #141a2e;
   border-radius: 8px;
-  color: #f2f2f2;
+  color: #f2f5fa;
 }
 
 .whitelist-add-btn {
@@ -1148,7 +1212,7 @@ h1 {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  border: 1px solid #23262f;
+  border: 1px solid #141a2e;
   border-radius: 10px;
 }
 
@@ -1159,7 +1223,7 @@ h1 {
   gap: 14px;
   padding: 11px 16px;
   font-size: 13px;
-  border-bottom: 1px solid #1a1c22;
+  border-bottom: 1px solid #0e1424;
 }
 
 .whitelist-row:last-child {
@@ -1170,9 +1234,9 @@ h1 {
   padding: 5px 12px;
   font-size: 12px;
   font-weight: 600;
-  color: #ff8a8a;
-  background: #2a1f22;
-  border: 1px solid #5a2a2a;
+  color: #fca5a5;
+  background: #2a1520;
+  border: 1px solid #4a1f24;
   border-radius: 6px;
   cursor: pointer;
 }
@@ -1183,30 +1247,14 @@ h1 {
   margin-bottom: 10px;
   padding: 13px 14px;
   font-size: 14px;
-  background: #15171c;
-  border: 1px solid #23262f;
+  background: #0c111f;
+  border: 1px solid #141a2e;
   border-radius: 8px;
-  color: #f2f2f2;
+  color: #f2f5fa;
 }
 
 .text-input:focus {
   outline: none;
-  border-color: #4cd964;
+  border-color: #22c55e;
 }
 
-.login-divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 18px 0;
-  color: #5a606b;
-  font-size: 12px;
-}
-
-.login-divider::before,
-.login-divider::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: #23262f;
-}

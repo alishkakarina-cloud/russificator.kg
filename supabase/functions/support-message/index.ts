@@ -14,10 +14,19 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const TELEGRAM_BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN')!;
 
-// @TOGUZZ11 и @Wiqqq99 — те же два администратора, что и в admin-action.
-const ADMIN_CHAT_IDS = [7155433371, 8106761823];
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+// Тот же принцип, что в admin-action/telegram-webhook: список админов — в
+// таблице admin_usernames, а не захардкожен здесь.
+async function getAdminTelegramIds(): Promise<number[]> {
+  const { data: admins } = await supabase.from('admin_usernames').select('username');
+  const adminSet = new Set((admins ?? []).map((a) => a.username.toLowerCase()));
+  if (!adminSet.size) return [];
+  const { data: users } = await supabase.from('telegram_users').select('telegram_id, username');
+  return (users ?? [])
+    .filter((u) => u.username && adminSet.has(u.username.toLowerCase()))
+    .map((u) => u.telegram_id);
+}
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -82,7 +91,7 @@ Deno.serve(async (req) => {
       if (error) return json({ error: error.message }, 500);
 
       const who = user.username ? `@${user.username}` : `id ${user.id}`;
-      for (const chatId of ADMIN_CHAT_IDS) {
+      for (const chatId of await getAdminTelegramIds()) {
         await tg('sendMessage', {
           chat_id: chatId,
           text: `Новое сообщение от ${who} (russificator.kg):\n\n${text}`,
