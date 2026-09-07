@@ -8,7 +8,7 @@
 const { SUPABASE_URL, SUPABASE_ANON_KEY, BOT_USERNAME } = window.APP_CONFIG;
 const POLL_INTERVAL_MS = 2500;
 const STORAGE_KEY = 'russificator_login_token';
-const SESSION_MS = 10 * 60 * 1000;
+const SESSION_MS = 20 * 60 * 1000;
 
 const screens = {
   login: document.getElementById('screen-login'),
@@ -440,7 +440,7 @@ async function tryLocalSession() {
   const trusted = await isTrustedUser(session.loginToken);
 
   if (!trusted && Date.now() - session.lastActivityAt > SESSION_MS) {
-    // loginToken остаётся approved на сервере навсегда — 10 минут это только
+    // loginToken остаётся approved на сервере навсегда — 20 минут это только
     // локальное доверие устройству, поэтому залогировать событие всё ещё
     // можно тем же токеном.
     await carSession('log_event', {
@@ -461,10 +461,10 @@ async function tryLocalSession() {
     console.error('Проверка блокировки не удалась, продолжаем офлайн', err);
   }
 
-  // Раньше здесь стоял sessionStore.touch() — "продлевал" 10-минутное окно
+  // Раньше здесь стоял sessionStore.touch() — "продлевал" 20-минутное окно
   // при каждом резюме приложения. Убрано намеренно: таймер должен идти
   // строго от момента входа, не сбрасываясь ни от чего, включая повторное
-  // открытие приложения в рамках этих 10 минут.
+  // открытие приложения в рамках этих 20 минут.
   if (await ensureAutomaxKgReady(session.loginToken)) {
     showScreen('main');
     await initMainScreen();
@@ -581,7 +581,7 @@ async function enterTerminalScreen(carSess, loginToken) {
   }).catch((e) => console.error('Не удалось залогировать запуск', e));
 }
 
-// ------------------------- Видимый таймер сессии (10 минут) -------------------------
+// ------------------------- Видимый таймер сессии (20 минут) -------------------------
 // Раньше 10-минутный лимит проверялся только в момент входа/резюме — пока
 // приложение оставалось открытым, ничего не мешало сидеть в нём (и работать
 // с AUTOMAX KG) сколько угодно. Теперь лимит соблюдается всё время, пока
@@ -1321,7 +1321,7 @@ const EVENT_LABELS = {
   automaxkg_launched: 'AUTOMAX KG запущен',
   automaxkg_launch_error: 'Ошибка запуска AUTOMAX KG',
   session_finished: 'Нажато «Завершено»',
-  session_expired: 'Локальная сессия истекла (10 минут)',
+  session_expired: 'Локальная сессия истекла (20 минут)',
 };
 
 function fmtEventDetail(ev) {
@@ -1358,7 +1358,7 @@ async function openSessionDetail(s, name, adminToken) {
       if (ev.event_type === 'session_finished' && ev.detail?.auto) {
         label =
           ev.detail.reason === 'timer_expired'
-            ? 'Прервана истечением таймера (10 минут)'
+            ? 'Прервана истечением таймера (20 минут)'
             : ev.detail.reason === 'kicked'
             ? 'Прервана мгновенным киком администратора'
             : 'Закрыта автоматически (осталась незавершённой)';
