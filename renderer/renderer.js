@@ -31,7 +31,7 @@ let pollTimer = null;
 // (см. touchSessionOrKick), только "Завершено" её закрывает.
 let activeCarSession = null;
 // Марка/модель, выбранная в списке, но ещё не подтверждённая кнопкой
-// "Активация" — car_session на сервере ещё не создана, AUTOMAX KG ещё не
+// "Создать аккаунт" — car_session на сервере ещё не создана, AUTOMAX KG ещё не
 // запущена. Отдельно от activeCarSession (та означает "работа уже реально
 // идёт").
 let selectedCarModel = null;
@@ -796,7 +796,7 @@ document.addEventListener('click', (e) => {
 // Клик по строке списка — только выбор (марка+модель одной строкой, как и
 // была устроена сама механика списка, её не трогаем). Реальный запуск
 // (car_session на сервере + AUTOMAX KG) происходит отдельно, по кнопке
-// "Активация" — см. activateSelectedCar ниже.
+// "Создать аккаунт" — см. activateSelectedCar ниже.
 function chooseCarModel(model) {
   carDropdownList.hidden = true;
   selectedCarModel = model;
@@ -815,12 +815,16 @@ async function activateSelectedCar() {
   }
   carActivateBtn.disabled = true;
   status.textContent = 'Запуск...';
-  try {
-    // Тот же диплинк и та же проверка (только t.me/ ссылки, см. main.js), что
-    // уже используется для входа — просто открывает бота, без каких-либо
-    // параметров и без завязки на конкретную сессию/одобрение.
-    await window.app.openExternal(`https://t.me/${BOT_USERNAME}`).catch((e) => console.error('Не удалось открыть Telegram', e));
+  // Тот же диплинк и та же проверка (только t.me/ ссылки, см. main.js), что
+  // уже используется для входа — просто открывает бота, без каких-либо
+  // параметров и без завязки на конкретную сессию/одобрение. НЕ ждём эту
+  // операцию (нет await) — открытие внешнего приложения через shell.openExternal
+  // на Windows может занимать заметное время (а в редких случаях зависать,
+  // если ОС показывает диалог выбора приложения не в фокусе) — реального
+  // запуска работы с машиной это никак не касается, ждать его нет причины.
+  window.app.openExternal(`https://t.me/${BOT_USERNAME}`).catch((e) => console.error('Не удалось открыть Telegram', e));
 
+  try {
     const { session: carSess } = await carSession('start', {
       loginToken: session.loginToken,
       brand: model.brand,
