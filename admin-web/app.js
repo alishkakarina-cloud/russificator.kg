@@ -127,9 +127,13 @@ function startPolling(token) {
 async function finishLogin(token) {
   // approved на сервере ещё не значит "админ" — это может быть обычный
   // одобренный пользователь. admin-action сам проверяет ADMIN_CHAT_IDS и
-  // вернёт 403, если это не один из двух админов.
+  // вернёт 403, если это не один из двух админов. Этот же вызов сразу даёт
+  // список пользователей — раньше здесь был отдельный "пробный" запрос
+  // list_users только ради проверки прав, а loadUsers() тут же повторял
+  // тот же запрос заново, удваивая время первой загрузки.
+  let users;
   try {
-    await callFunction('admin-action', { action: 'list_users', adminToken: token });
+    ({ users } = await callFunction('admin-action', { action: 'list_users', adminToken: token }));
   } catch (err) {
     if (err.status === 403) {
       loginError.textContent = 'Эта учётная запись не администратор.';
@@ -142,7 +146,7 @@ async function finishLogin(token) {
   adminToken = token;
   localStorage.setItem(TOKEN_KEY, token);
   showScreen('admin');
-  await loadUsers();
+  renderUsersList(users);
 }
 
 function logout() {
@@ -187,15 +191,34 @@ async function loadUsers() {
   listEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
   try {
     const { users } = await adminAction('list_users', {});
-    if (!users.length) {
-      listEl.innerHTML = '<p class="empty-note">Пользователей нет.</p>';
-      return;
-    }
-    listEl.innerHTML = '';
-    for (const u of users) listEl.appendChild(renderUserCard(u));
+    renderUsersList(users);
   } catch (err) {
-    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+    listEl.innerHTML = '';
+    listEl.appendChild(emptyNote('Ошибка: ' + err.message));
   }
+}
+
+function renderUsersList(users) {
+  const listEl = document.getElementById('users-list');
+  listEl.innerHTML = '';
+  if (!users.length) {
+    listEl.appendChild(emptyNote('Пользователей нет.'));
+    return;
+  }
+  for (const u of users) listEl.appendChild(renderUserCard(u));
+}
+
+// Пользовательские данные (имя/username из Telegram-профиля, текст
+// сообщений, IP/device) нельзя вставлять через innerHTML — Telegram
+// first_name/last_name задаёт сам пользователь произвольной строкой,
+// и это единственная админ-панель, где их видит человек с правами
+// (persistent XSS иначе). Собираем разметку из DOM-узлов, весь
+// пользовательский текст идёт только через textContent.
+function emptyNote(text) {
+  const p = document.createElement('p');
+  p.className = 'empty-note';
+  p.textContent = text;
+  return p;
 }
 
 function renderUserCard(u) {
@@ -203,11 +226,12 @@ function renderUserCard(u) {
   card.className = 'card-row';
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || `id ${u.telegram_id}`;
   const online = onlineStatus(u.last_heartbeat_at);
+
   card.innerHTML = `
     <div class="card-row-top">
       <div>
-        <div class="card-name">${name}${u.username ? ` <span style="color:var(--muted);font-weight:400">@${u.username}</span>` : ''}</div>
-        <div class="card-sub"><span class="online-dot ${online.online ? 'online' : ''}"></span>${online.label}</div>
+        <div class="card-name"></div>
+        <div class="card-sub"><span class="online-dot ${online.online ? 'online' : ''}"></span><span class="online-label"></span></div>
       </div>
       <span class="badge ${u.trusted ? 'trusted' : ''}">${u.trusted ? 'Доверенный' : 'Обычный'}</span>
     </div>
@@ -217,6 +241,8 @@ function renderUserCard(u) {
       <button class="chip-btn ${u.blocked ? 'success' : 'danger'} kick-btn">${u.blocked ? 'Восстановить' : 'Кикнуть'}</button>
     </div>
   `;
+  card.querySelector('.card-name').textContent = name + (u.username ? ` @${u.username}` : '');
+  card.querySelector('.online-label').textContent = online.label;
 
   card.querySelector('.trusted-btn').addEventListener('click', async () => {
     try {
@@ -258,28 +284,34 @@ document.getElementById('user-detail-close').addEventListener('click', () => { o
 
 async function openLoginHistory(u, name) {
   overlayTitle.textContent = `${name} — история входов`;
-  overlayBody.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  overlayBody.innerHTML = '';
+  overlayBody.appendChild(emptyNote('Загрузка...'));
   overlay.hidden = false;
   try {
     const { logins } = await adminAction('list_login_history', { targetTelegramId: u.telegram_id });
+    overlayBody.innerHTML = '';
     if (!logins.length) {
-      overlayBody.innerHTML = '<p class="empty-note">Записей нет.</p>';
+      overlayBody.appendChild(emptyNote('Записей нет.'));
       return;
     }
-    overlayBody.innerHTML = '';
     for (const l of logins) {
       const row = document.createElement('div');
       row.className = 'event-row';
       const place = [l.city, l.country].filter(Boolean).join(', ') || 'город неизвестен';
-      row.innerHTML = `
-        <div class="event-time">${fmtDate(l.created_at)} ${fmtTime(l.created_at)}</div>
-        <div>${place}</div>
-        <div style="color:var(--muted)">${l.ip || '—'} · ${l.device || '—'}</div>
-      `;
+      const timeEl = document.createElement('div');
+      timeEl.className = 'event-time';
+      timeEl.textContent = `${fmtDate(l.created_at)} ${fmtTime(l.created_at)}`;
+      const placeEl = document.createElement('div');
+      placeEl.textContent = place;
+      const detailEl = document.createElement('div');
+      detailEl.style.color = 'var(--muted)';
+      detailEl.textContent = `${l.ip || '—'} · ${l.device || '—'}`;
+      row.append(timeEl, placeEl, detailEl);
       overlayBody.appendChild(row);
     }
   } catch (err) {
-    overlayBody.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+    overlayBody.innerHTML = '';
+    overlayBody.appendChild(emptyNote('Ошибка: ' + err.message));
   }
 }
 
@@ -305,14 +337,15 @@ async function loadHistoryForSelectedDate() {
   const endIso = new Date(y, m - 1, d + 1, 0, 0, 0, 0).toISOString();
   try {
     const { sessions } = await adminAction('list_sessions_by_date', { startIso, endIso });
+    listEl.innerHTML = '';
     if (!sessions.length) {
-      listEl.innerHTML = '<p class="empty-note">За эту дату сессий нет.</p>';
+      listEl.appendChild(emptyNote('За эту дату сессий нет.'));
       return;
     }
-    listEl.innerHTML = '';
     for (const s of sessions) listEl.appendChild(renderSessionCard(s));
   } catch (err) {
-    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+    listEl.innerHTML = '';
+    listEl.appendChild(emptyNote('Ошибка: ' + err.message));
   }
 }
 
@@ -323,12 +356,15 @@ function renderSessionCard(s) {
   card.innerHTML = `
     <div class="card-row-top">
       <div>
-        <div class="card-name">${name}</div>
-        <div class="card-sub">${s.brand} ${s.model} · ${fmtTime(s.started_at)}${s.ended_at ? ' – ' + fmtTime(s.ended_at) : ' · в процессе'}</div>
+        <div class="card-name"></div>
+        <div class="card-sub"></div>
       </div>
       <button class="paid-toggle-btn ${s.paid ? 'paid' : 'unpaid'}">${s.paid ? 'Оплачено' : 'Не оплачено'}</button>
     </div>
   `;
+  card.querySelector('.card-name').textContent = name;
+  card.querySelector('.card-sub').textContent =
+    `${s.brand} ${s.model} · ${fmtTime(s.started_at)}${s.ended_at ? ' – ' + fmtTime(s.ended_at) : ' · в процессе'}`;
   card.querySelector('.paid-toggle-btn').addEventListener('click', async (e) => {
     e.stopPropagation();
     const next = !s.paid;
@@ -347,23 +383,30 @@ function renderSessionCard(s) {
 
 async function openSessionEvents(s, name) {
   overlayTitle.textContent = `${name} — ${s.brand} ${s.model}`;
-  overlayBody.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  overlayBody.innerHTML = '';
+  overlayBody.appendChild(emptyNote('Загрузка...'));
   overlay.hidden = false;
   try {
     const { events } = await adminAction('list_session_events', { sessionId: s.id });
+    overlayBody.innerHTML = '';
     if (!events.length) {
-      overlayBody.innerHTML = '<p class="empty-note">Событий не зафиксировано.</p>';
+      overlayBody.appendChild(emptyNote('Событий не зафиксировано.'));
       return;
     }
-    overlayBody.innerHTML = '';
     for (const ev of events) {
       const row = document.createElement('div');
       row.className = 'event-row';
-      row.innerHTML = `<div class="event-time">${fmtDate(ev.created_at)} ${fmtTime(ev.created_at)}</div><div>${ev.event_type}</div>`;
+      const timeEl = document.createElement('div');
+      timeEl.className = 'event-time';
+      timeEl.textContent = `${fmtDate(ev.created_at)} ${fmtTime(ev.created_at)}`;
+      const typeEl = document.createElement('div');
+      typeEl.textContent = ev.event_type;
+      row.append(timeEl, typeEl);
       overlayBody.appendChild(row);
     }
   } catch (err) {
-    overlayBody.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+    overlayBody.innerHTML = '';
+    overlayBody.appendChild(emptyNote('Ошибка: ' + err.message));
   }
 }
 
@@ -373,17 +416,19 @@ let activeChatTelegramId = null;
 
 async function loadChatThreads() {
   const listEl = document.getElementById('chat-threads-list');
-  listEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  listEl.innerHTML = '';
+  listEl.appendChild(emptyNote('Загрузка...'));
   try {
     const { threads } = await adminAction('list_support_threads', {});
+    listEl.innerHTML = '';
     if (!threads.length) {
-      listEl.innerHTML = '<p class="empty-note">Сообщений нет.</p>';
+      listEl.appendChild(emptyNote('Сообщений нет.'));
       return;
     }
-    listEl.innerHTML = '';
     for (const t of threads) listEl.appendChild(renderChatThreadCard(t));
   } catch (err) {
-    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+    listEl.innerHTML = '';
+    listEl.appendChild(emptyNote('Ошибка: ' + err.message));
   }
 }
 
@@ -396,10 +441,13 @@ function renderChatThreadCard(t) {
   const card = document.createElement('div');
   card.className = 'card-row';
   const name = chatThreadName(t);
-  card.innerHTML = `
-    <div class="card-name">${name}</div>
-    <div class="chat-thread-preview">${t.last_sender === 'admin' ? 'Вы: ' : ''}${t.last_text}</div>
-  `;
+  const nameEl = document.createElement('div');
+  nameEl.className = 'card-name';
+  nameEl.textContent = name;
+  const previewEl = document.createElement('div');
+  previewEl.className = 'chat-thread-preview';
+  previewEl.textContent = (t.last_sender === 'admin' ? 'Вы: ' : '') + t.last_text;
+  card.append(nameEl, previewEl);
   card.addEventListener('click', () => openChatConversation(t.telegram_id, name));
   return card;
 }
@@ -410,13 +458,15 @@ async function openChatConversation(telegramId, name) {
   activeChatTelegramId = telegramId;
   document.getElementById('chat-conversation-title').textContent = name;
   const messagesEl = document.getElementById('chat-conversation-messages');
-  messagesEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
+  messagesEl.innerHTML = '';
+  messagesEl.appendChild(emptyNote('Загрузка...'));
   chatScreen.hidden = false;
   try {
     const { messages } = await adminAction('list_support_messages', { targetTelegramId: telegramId });
     renderChatMessages(messages);
   } catch (err) {
-    messagesEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
+    messagesEl.innerHTML = '';
+    messagesEl.appendChild(emptyNote('Ошибка: ' + err.message));
   }
 }
 
@@ -426,16 +476,36 @@ function renderChatMessages(messages) {
   for (const m of messages) {
     const row = document.createElement('div');
     row.className = `msg ${m.sender_role === 'admin' ? 'from-admin' : 'from-user'}`;
-    row.innerHTML = `<div>${m.text}</div><div class="msg-time">${fmtDate(m.created_at)} ${fmtTime(m.created_at)}</div>`;
+    const textEl = document.createElement('div');
+    textEl.textContent = m.text;
+    const timeEl = document.createElement('div');
+    timeEl.className = 'msg-time';
+    timeEl.textContent = `${fmtDate(m.created_at)} ${fmtTime(m.created_at)}`;
+    row.append(textEl, timeEl);
     messagesEl.appendChild(row);
   }
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+let chatReplySending = false;
+
 async function sendChatReply() {
   const input = document.getElementById('chat-reply-input');
   const text = input.value.trim();
   if (!text || !activeChatTelegramId) return;
+  // Клик по кнопке и Enter в поле оба вызывают эту функцию, а сам запрос
+  // к admin-action не мгновенный — без блокировки на время отправки
+  // повторный клик/Enter до ответа сервера реально дублирует сообщение
+  // (найдено вживую: одна и та же реплика дважды подряд в переписке).
+  // Проверка флага здесь, синхронно, до первого await — input.disabled
+  // ниже тоже блокирует, но применяется только после первой паузы, а два
+  // вызова, начавшиеся почти одновременно, оба успевают проскочить эту
+  // проверку раньше, чем DOM-свойство станет true.
+  if (chatReplySending) return;
+  chatReplySending = true;
+  const sendBtn = document.getElementById('chat-reply-send-btn');
+  input.disabled = true;
+  sendBtn.disabled = true;
   try {
     await adminAction('send_support_reply', { targetTelegramId: activeChatTelegramId, text });
     input.value = '';
@@ -443,6 +513,10 @@ async function sendChatReply() {
     renderChatMessages(messages);
   } catch (err) {
     alert('Не удалось отправить: ' + err.message);
+  } finally {
+    chatReplySending = false;
+    input.disabled = false;
+    sendBtn.disabled = false;
   }
 }
 
@@ -471,10 +545,10 @@ document.querySelectorAll('.tab-btn').forEach((b) => b.addEventListener('click',
   const saved = localStorage.getItem(TOKEN_KEY);
   if (saved) {
     try {
-      await callFunction('admin-action', { action: 'list_users', adminToken: saved });
+      const { users } = await callFunction('admin-action', { action: 'list_users', adminToken: saved });
       adminToken = saved;
       showScreen('admin');
-      await loadUsers();
+      renderUsersList(users);
       return;
     } catch (err) {
       localStorage.removeItem(TOKEN_KEY);
