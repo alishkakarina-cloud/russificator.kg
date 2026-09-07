@@ -1648,21 +1648,33 @@ function renderSupportMessages(messages) {
   container.scrollTop = container.scrollHeight;
 }
 
+// Синхронный флаг (не только btn.disabled) — если Enter и клик по кнопке
+// срабатывают почти одновременно, оба вызова успевают начаться до того,
+// как первый await (sessionStore.get()) вернётся и выставит disabled;
+// найдено вживую в веб-админке (та же функция без этой защиты дублировала
+// сообщение), здесь ставим ту же защиту на всякий случай.
+let supportMessageSending = false;
+
 async function sendSupportMessage() {
   const input = document.getElementById('support-input');
   const text = input.value.trim();
-  if (!text) return;
-  const session = await window.sessionStore.get();
-  if (!session) return;
+  // Флаг выставляется синхронно, до любого await — иначе два вызова,
+  // начавшиеся почти одновременно (Enter + клик), оба проходят проверку
+  // раньше, чем первый успеет её выставить.
+  if (!text || supportMessageSending) return;
+  supportMessageSending = true;
   const btn = document.getElementById('support-send-btn');
   btn.disabled = true;
   try {
+    const session = await window.sessionStore.get();
+    if (!session) return;
     await callFunction('support-message', { action: 'send', loginToken: session.loginToken, text });
     input.value = '';
     await loadSupportMessages();
   } catch (err) {
     document.getElementById('support-status').textContent = 'Не удалось отправить: ' + err.message;
   } finally {
+    supportMessageSending = false;
     btn.disabled = false;
   }
 }
@@ -1743,15 +1755,22 @@ async function openChatConversation(telegramId, name, adminToken) {
   }
 }
 
+// Синхронный флаг, выставляется до любого await — иначе Enter и клик,
+// сработавшие почти одновременно, оба проходят проверку раньше, чем
+// первый вызов успевает выставить её (см. тот же паттерн у
+// sendSupportMessage выше).
+let chatReplySending = false;
+
 async function sendChatReply() {
   if (!activeChatTelegramId) return;
   const input = document.getElementById('chat-reply-input');
   const text = input.value.trim();
-  if (!text) return;
-  const session = await window.sessionStore.get();
+  if (!text || chatReplySending) return;
+  chatReplySending = true;
   const sendBtn = document.getElementById('chat-reply-send-btn');
   sendBtn.disabled = true;
   try {
+    const session = await window.sessionStore.get();
     await adminAction('send_support_reply', { adminToken: session.loginToken, targetTelegramId: activeChatTelegramId, text });
     input.value = '';
     const name = document.getElementById('chat-conversation-title').textContent;
@@ -1760,6 +1779,7 @@ async function sendChatReply() {
   } catch (err) {
     alert('Не удалось отправить: ' + err.message);
   } finally {
+    chatReplySending = false;
     sendBtn.disabled = false;
   }
 }
