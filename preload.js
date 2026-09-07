@@ -3,7 +3,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('automaxkg', {
   status: () => ipcRenderer.invoke('automaxkg-status'),
   getCleanupResult: () => ipcRenderer.invoke('automaxkg-cleanup-result'),
-  getDeviceId: () => ipcRenderer.invoke('get-device-id'),
   download: (files) => ipcRenderer.invoke('automaxkg-download', { files }),
   onDownloadProgress: (callback) => {
     ipcRenderer.on('automaxkg-download-progress', (_event, data) => callback(data));

@@ -52,158 +52,24 @@ const sessionStore = new Store({ name: 'session', clearInvalidConfig: true });
 // automaxkg-status/automaxkg-download ниже.
 const AUTOMAXKG_DIR = path.join(app.getPath('userData'), 'runtime-data');
 const AUTOMAXKG_BAT_PATH = path.join(AUTOMAXKG_DIR, '@AUTOMAXKG) .bat');
-const AUTOMAXKG_ENCRYPTED_MARKER = path.join(AUTOMAXKG_DIR, '.encrypted');
-// Место докачки — файлы приходят сюда в открытом виде (как раньше), потом
-// шифруются В AUTOMAXKG_DIR, а эта папка удаляется. Расшифрованная рабочая
-// копия для реального запуска — отдельная, третья папка, живёт только на
-// время активной сессии.
+// Временная папка докачки — после того как все файлы скачаны и целостность
+// каждого проверена (см. automaxkg-download ниже), переносится в
+// AUTOMAXKG_DIR одним переименованием.
 const AUTOMAXKG_STAGING_DIR = path.join(app.getPath('userData'), 'runtime-data-staging');
-const AUTOMAXKG_DECRYPTED_DIR = path.join(app.getPath('userData'), 'runtime-data-decrypted');
-const AUTOMAXKG_DECRYPTED_BAT_PATH = path.join(AUTOMAXKG_DECRYPTED_DIR, '@AUTOMAXKG) .bat');
 
 function isAutomaxKgPresent() {
   return fs.existsSync(AUTOMAXKG_BAT_PATH);
 }
 
-function isAutomaxKgEncrypted() {
-  return fs.existsSync(AUTOMAXKG_ENCRYPTED_MARKER);
-}
-
-// deviceId — случайный идентификатор этого конкретного компьютера,
-// сгенерированный один раз при первом запуске. Не секрет сам по себе (это
-// как логин устройства, не пароль) — используется сервером (automaxkg-key)
-// для вывода СВОЕГО ключа шифрования для каждого устройства отдельно.
-const deviceStore = new Store({ name: 'device' });
-function getDeviceId() {
-  let id = deviceStore.get('deviceId');
-  if (!id) {
-    id = crypto.randomUUID();
-    deviceStore.set('deviceId', id);
-  }
-  return id;
-}
-
-// ---- Шифрование файлов AUTOMAX KG в состоянии покоя на диске (AES-256-GCM) ----
-// Ключ никогда не хранится на диске клиента — только в памяти, на время
-// самой операции шифрования/расшифровки, и всегда получен только что от
-// сервера (см. renderer.js: automaxkg-key). Формат файла на диске:
-// [12 байт IV][зашифрованные данные][16 байт тег аутентификации GCM] —
-// тег в конце позволяет обнаружить порчу/подмену файла при расшифровке
-// (GCM не расшифрует молча повреждённые данные, а явно выдаст ошибку).
-
-function keyHexToBuffer(keyHex) {
-  const buf = Buffer.from(keyHex, 'hex');
-  if (buf.length !== 32) throw new Error('Неверная длина ключа шифрования');
-  return buf;
-}
-
-function encryptFile(srcPath, destPath, keyBuf) {
-  return new Promise((resolve, reject) => {
-    const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv('aes-256-gcm', keyBuf, iv);
-    const input = fs.createReadStream(srcPath);
-    const output = fs.createWriteStream(destPath);
-
-    let settled = false;
-    const fail = (err) => {
-      if (settled) return;
-      settled = true;
-      output.destroy();
-      fs.rm(destPath, { force: true }, () => {});
-      reject(err);
-    };
-
-    input.on('error', fail);
-    cipher.on('error', fail);
-    output.on('error', fail);
-
-    output.write(iv);
-    input.pipe(cipher).pipe(output, { end: false });
-    cipher.on('end', () => {
-      if (settled) return;
-      try {
-        output.end(cipher.getAuthTag(), () => {
-          settled = true;
-          resolve();
-        });
-      } catch (err) {
-        fail(err);
-      }
-    });
-  });
-}
-
-function decryptFile(srcPath, destPath, keyBuf) {
-  return new Promise((resolve, reject) => {
-    let fd;
-    try {
-      fd = fs.openSync(srcPath, 'r');
-      const size = fs.fstatSync(fd).size;
-      if (size < 12 + 16) throw new Error(`Файл повреждён (слишком мал): ${srcPath}`);
-
-      const iv = Buffer.alloc(12);
-      fs.readSync(fd, iv, 0, 12, 0);
-      const tag = Buffer.alloc(16);
-      fs.readSync(fd, tag, 0, 16, size - 16);
-      fs.closeSync(fd);
-      fd = null;
-
-      const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuf, iv);
-      decipher.setAuthTag(tag);
-
-      const input = fs.createReadStream(srcPath, { start: 12, end: size - 16 - 1 });
-      const output = fs.createWriteStream(destPath);
-
-      let settled = false;
-      const fail = (err) => {
-        if (settled) return;
-        settled = true;
-        output.destroy();
-        fs.rm(destPath, { force: true }, () => {});
-        reject(err);
-      };
-
-      input.on('error', fail);
-      decipher.on('error', fail);
-      output.on('error', fail);
-      output.on('finish', () => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      });
-
-      input.pipe(decipher).pipe(output);
-    } catch (err) {
-      if (fd !== null && fd !== undefined) {
-        try {
-          fs.closeSync(fd);
-        } catch {}
-      }
-      reject(err);
-    }
-  });
-}
-
-// Шифрование/расшифровка ~3ГБ данных по одному файлу упирается в диск
-// (проверено: 6 параллельных файлов дают почти двукратное ускорение, 12 —
-// уже без выигрыша, диск — узкое место, не процессор). CONCURRENCY=6 —
-// разумный баланс, без него полная расшифровка перед каждым запуском заняла
-// бы вдвое дольше.
-const CRYPTO_CONCURRENCY = 6;
-
 // Если один воркер бросает исключение, Promise.all реджектится немедленно,
 // но ОСТАЛЬНЫЕ уже запущенные воркеры при этом не отменяются — они
 // продолжают работать в фоне уже ПОСЛЕ того, как вызывающий код (например,
-// повторная попытка после сбоя) продолжил выполнение. Для encryptInPlace
-// это означало реальную гонку: "осиротевший" воркер от первой попытки мог
-// дописывать/переименовывать файл ровно в тот момент, когда пользователь
-// нажимал "Повторить" и запускал шифрование той же директории заново —
-// именно так на практике возникали побитые файлы вида "*.enc.tmp.enc.tmp".
-// Поэтому здесь каждый воркер сам ловит свою ошибку и просто перестаёт
-// брать новые задачи — Promise.all гарантированно дожидается ЗАВЕРШЕНИЯ
-// всех воркеров (успешного или нет), и только после этого функция бросает
-// первую пойманную ошибку. К моменту, когда caller видит исключение, в
-// директории не остаётся никаких фоновых операций.
+// повторная попытка после сбоя) продолжил выполнение. Поэтому здесь каждый
+// воркер сам ловит свою ошибку и просто перестаёт брать новые задачи —
+// Promise.all гарантированно дожидается ЗАВЕРШЕНИЯ всех воркеров (успешного
+// или нет), и только после этого функция бросает первую пойманную ошибку.
+// К моменту, когда caller видит исключение, в директории не остаётся
+// никаких фоновых операций.
 async function runPool(items, worker, concurrency) {
   const queue = [...items];
   let firstError = null;
@@ -236,28 +102,10 @@ function walkFiles(dir) {
   return results;
 }
 
-// Шифрует все файлы из srcDir в destDir (сохраняя относительные пути), затем
-// удаляет srcDir целиком. Используется и для первой докачки (srcDir —
-// временная папка со свежескачанными файлами), и не используется напрямую
-// для миграции уже существующей на диске открытой копии — там нужно шифровать
-// "на месте", см. encryptInPlace ниже.
-async function encryptDirInto(srcDir, destDir, keyBuf) {
-  const files = walkFiles(srcDir);
-  fs.mkdirSync(destDir, { recursive: true });
-  await runPool(files, async (rel) => {
-    const destPath = path.join(destDir, rel);
-    fs.mkdirSync(path.dirname(destPath), { recursive: true });
-    await encryptFile(path.join(srcDir, rel), destPath, keyBuf);
-  }, CRYPTO_CONCURRENCY);
-  fs.rmSync(srcDir, { recursive: true, force: true });
-}
-
 // На Windows fs.renameSync(tmp, original) иногда падает с кратковременным
-// EPERM сразу после того, как output-поток шифрования сообщил о завершении
-// записи — обычно это антивирус ещё держит файл на сканирование долю
-// секунды. Раньше это было фатально (см. recoverLeftoverEncTmp ниже — из-за
-// чего именно) — несколько попыток с паузой почти всегда решают проблему
-// без участия пользователя.
+// EPERM сразу после большой файловой операции — обычно это антивирус ещё
+// держит файл на сканирование долю секунды. Несколько попыток с паузой
+// почти всегда решают проблему без участия пользователя.
 async function renameWithRetry(from, to, attempts = 5) {
   for (let i = 0; i < attempts; i++) {
     try {
@@ -270,115 +118,86 @@ async function renameWithRetry(from, to, attempts = 5) {
   }
 }
 
-// Приводит папку в консистентное состояние после прерванной ПРЕДЫДУЩЕЙ
-// попытки encryptInPlace (например упавшей на renameSync — раньше оригинал
-// удалялся ДО переименования временного файла обратно, и при сбое rename
-// файл терялся под именем "*.enc.tmp", а следующая попытка находила его
-// через walkFiles и шифровала ПОВТОРНО — отсюда "*.enc.tmp.enc.tmp.enc.tmp"
-// на скриншоте пользователя). Если оригинал ещё существует — .enc.tmp это
-// просто мусор от прерванной попытки, шифрование повторится с нуля. Если
-// оригинала уже нет — .enc.tmp это единственная сохранившаяся копия файла,
-// просто застрявшая под временным именем, и её нужно восстановить, а не
-// шифровать заново (что превратило бы уже зашифрованные данные в мусор).
-// Минимальный валидный зашифрованный файл — IV(12) + TAG(16), даже для
-// исходно пустого файла. Если .enc.tmp меньше этого (например процесс
-// был прерван прямо во время записи ciphertext — Alt+F4, крах, обрыв
-// питания), восстанавливать его как "готовый" нельзя: это молча подсунуло
-// бы AUTOMAX KG битый файл вместо явной, заметной ошибки.
-const MIN_VALID_ENC_SIZE = 12 + 16;
+// ---- Защита файлов AUTOMAX KG от случайного обнаружения ----
+// Предыдущая попытка (полное шифрование AES-256-GCM + расшифровка во
+// временную копию перед каждым запуском) один раз уже уронила реальную
+// работу с машинами в проде (падение AUTOMAX KG с кодом 255 на нескольких
+// марках после расшифровки, причина не найдена) — сама операция шифровки/
+// расшифровки на "горячем пути" запуска оказалась ненадёжной. Вместо этого
+// защита теперь целиком на уровне файловой системы, без прикосновения к
+// содержимому файлов при каждом запуске: скрытые+системные атрибуты папки
+// (ниже, в automaxkg-download) и права NTFS только для текущей учётной
+// записи (restrictAccessToCurrentUser). Этого достаточно, чтобы обычный
+// человек, оказавшийся за этим компьютером — не целенаправленный
+// злоумышленник с инструментами восстановления/анализа диска — не нашёл и
+// не скопировал файлы, и ничего не может сломать на запуске, потому что на
+// запуске больше ничего не происходит с самими файлами.
 
-function recoverLeftoverEncTmp(dir) {
-  for (const rel of walkFiles(dir)) {
-    if (!rel.endsWith('.enc.tmp')) continue;
-    const tmpPath = path.join(dir, rel);
-    const originalPath = tmpPath.slice(0, -'.enc.tmp'.length);
-    if (fs.existsSync(originalPath)) {
-      fs.rmSync(tmpPath, { force: true });
-      continue;
-    }
-    if (fs.statSync(tmpPath).size < MIN_VALID_ENC_SIZE) {
-      // Оригинала нет, а .enc.tmp обрезан — файл потерян безвозвратно этим
-      // путём. Удаляем огрызок, чтобы дальше отсутствие файла было явным
-      // (следующая проверка automaxkg-status увидит present:false и запустит
-      // полную докачку), а не тихой порчей на месте запуска.
-      log.error(`Повреждённый обрезанный файл шифрования потерян, требуется передокачка: ${rel}`);
-      fs.rmSync(tmpPath, { force: true });
-      continue;
-    }
-    fs.renameSync(tmpPath, originalPath);
-  }
-}
+// Обычное удаление (fs.rm) на NTFS не трогает байты содержимого — оно
+// только убирает запись файла из каталога, поэтому программы восстановления
+// (Recuva и подобные) могут вернуть файл, пока место на диске не
+// переиспользовано чем-то другим. Здесь мы поверх содержимого файла один
+// раз пишем случайные байты — это разрушает то самое содержимое, которое
+// такие программы восстанавливают из оставшихся на диске данных — и только
+// затем удаляем сам файл. Оговорка: на SSD с активным TRIM это не даёт
+// формальной гарантии (контроллер диска мог уже физически перенести старые
+// блоки при выравнивании износа) — цель здесь защититься от обычных
+// программ восстановления, а не от лабораторного криминалистического
+// анализа накопителя, и этой цели затирание отвечает.
+const WIPE_CHUNK_SIZE = 4 * 1024 * 1024;
 
-// Если попытка шифрования упала на одном файле, к моменту, когда об этом
-// узнаёт caller, несколько ДРУГИХ файлов (до CRYPTO_CONCURRENCY штук) уже
-// могли успешно зашифроваться параллельно — сам файл на диске после этого
-// ничем не отличается от ещё не тронутого (то же имя, то же место), и без
-// отдельной отметки следующий запуск зашифровал бы его ПОВТОРНО поверх уже
-// зашифрованных данных, необратимо испортив файл. Список путей, для которых
-// шифрование гарантированно завершено (успешный rename), хранится отдельно
-// и удаляется целиком только когда весь каталог обработан до конца.
-const ENCRYPT_PROGRESS_FILE = '.encrypt-progress.json';
-
-function loadEncryptProgress(dir) {
+async function secureWipeFile(filePath) {
+  let handle;
   try {
-    return new Set(JSON.parse(fs.readFileSync(path.join(dir, ENCRYPT_PROGRESS_FILE), 'utf8')));
-  } catch {
-    return new Set();
-  }
-}
-
-function saveEncryptProgress(dir, doneSet) {
-  fs.writeFileSync(path.join(dir, ENCRYPT_PROGRESS_FILE), JSON.stringify([...doneSet]));
-}
-
-// Миграция уже скачанной РАНЕЕ (до появления шифрования) открытой копии —
-// шифрует каждый файл во временный файл рядом, затем подменяет оригинал.
-// Не требует повторного скачивания 3ГБ с сервера.
-async function encryptInPlace(dir, keyBuf) {
-  recoverLeftoverEncTmp(dir);
-  const done = loadEncryptProgress(dir);
-  const files = walkFiles(dir).filter(
-    (rel) => !rel.endsWith('.enc.tmp') && rel !== ENCRYPT_PROGRESS_FILE && !done.has(rel)
-  );
-  await runPool(files, async (rel) => {
-    const original = path.join(dir, rel);
-    const tmp = original + '.enc.tmp';
-    await encryptFile(original, tmp, keyBuf);
-    // Оригинал больше НЕ удаляется заранее — fs.renameSync на Windows сам
-    // атомарно заменяет существующий целевой файл (MoveFileEx с
-    // MOVEFILE_REPLACE_EXISTING), так что нет момента, когда файл отсутствует
-    // под обоими именами одновременно, даже если rename с первой попытки
-    // не удался.
-    await renameWithRetry(tmp, original);
-    // Синхронный блок между await'ами — event loop однопоточный, конкурентные
-    // воркеры не могут прервать этот участок, поэтому Set + запись файла
-    // остаются согласованными без явной блокировки.
-    done.add(rel);
-    saveEncryptProgress(dir, done);
-  }, CRYPTO_CONCURRENCY);
-  fs.writeFileSync(AUTOMAXKG_ENCRYPTED_MARKER, '');
-  fs.rmSync(path.join(dir, ENCRYPT_PROGRESS_FILE), { force: true });
-}
-
-// Расшифровывает AUTOMAXKG_DIR в AUTOMAXKG_DECRYPTED_DIR (используется прямо
-// перед запуском). Если расшифрованная копия от предыдущего запуска не была
-// убрана (например приложение упало) — сначала подчищаем её.
-async function decryptForLaunch(keyBuf) {
-  fs.rmSync(AUTOMAXKG_DECRYPTED_DIR, { recursive: true, force: true });
-  const files = walkFiles(AUTOMAXKG_DIR).filter((f) => f !== '.encrypted');
-  fs.mkdirSync(AUTOMAXKG_DECRYPTED_DIR, { recursive: true });
-  await runPool(files, async (rel) => {
-    const destPath = path.join(AUTOMAXKG_DECRYPTED_DIR, rel);
-    fs.mkdirSync(path.dirname(destPath), { recursive: true });
-    await decryptFile(path.join(AUTOMAXKG_DIR, rel), destPath, keyBuf);
-  }, CRYPTO_CONCURRENCY);
-}
-
-function cleanupDecryptedCopy() {
-  try {
-    fs.rmSync(AUTOMAXKG_DECRYPTED_DIR, { recursive: true, force: true });
+    handle = await fs.promises.open(filePath, 'r+');
+    const { size } = await handle.stat();
+    let offset = 0;
+    while (offset < size) {
+      const chunkSize = Math.min(WIPE_CHUNK_SIZE, size - offset);
+      await handle.write(crypto.randomBytes(chunkSize), 0, chunkSize, offset);
+      offset += chunkSize;
+    }
+    await handle.sync();
   } catch (err) {
-    console.error('Не удалось удалить расшифрованную временную копию AUTOMAX KG', err);
+    log.error(`Не удалось затереть файл перед удалением, будет просто удалён: ${filePath}`, err);
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+  await fs.promises.rm(filePath, { force: true });
+}
+
+// Затирание/удаление ~3ГБ по одному файлу упирается в диск — та же причина,
+// что была у прежнего шифрования (проверено тогда: 6 параллельных операций
+// дают почти двукратное ускорение, диск — узкое место, не процессор).
+const WIPE_CONCURRENCY = 6;
+
+async function secureWipeDir(dir) {
+  if (!fs.existsSync(dir)) return;
+  const files = walkFiles(dir);
+  await runPool(files, (rel) => secureWipeFile(path.join(dir, rel)), WIPE_CONCURRENCY);
+  await fs.promises.rm(dir, { recursive: true, force: true });
+}
+
+// Закрывает доступ к папке на уровне файловой системы: только текущая
+// Windows-учётная запись (плюс SYSTEM, иначе некоторые системные операции с
+// правами могут отказать) может её читать — второй человек, работающий за
+// этим же компьютером под своим Windows-логином, не откроет файлы, даже
+// зная путь. /inheritance:r обрывает наследование прав от родительской
+// папки (иначе унаследованная группа "Пользователи" всё равно давала бы
+// доступ на чтение всем учёткам компьютера), /grant:r заменяет список прав
+// целиком, а не добавляет к унаследованному.
+function restrictAccessToCurrentUser(dir) {
+  const account = process.env.USERDOMAIN
+    ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}`
+    : process.env.USERNAME;
+  try {
+    execFileSync(
+      'icacls',
+      [dir, '/inheritance:r', '/grant:r', `${account}:(OI)(CI)F`, '/grant:r', 'SYSTEM:(OI)(CI)F'],
+      { timeout: 15000 }
+    );
+  } catch (err) {
+    log.error('Не удалось ограничить права доступа к папке AUTOMAX KG', err);
   }
 }
 
@@ -420,16 +239,16 @@ function looksLikeAutomaxKgDir(dir) {
   }
 }
 
-function cleanupOrphanedAutomaxKgCopies() {
+async function cleanupOrphanedAutomaxKgCopies() {
   const removed = [];
   for (const dir of getKnownOrphanedAutomaxKgDirs()) {
     if (path.resolve(dir) === path.resolve(AUTOMAXKG_DIR)) continue; // на всякий случай не даём задеть рабочую копию
     if (!fs.existsSync(dir)) continue;
     if (!looksLikeAutomaxKgDir(dir)) continue;
     try {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await secureWipeDir(dir);
       removed.push(dir);
-      console.log('Удалена старая независимая копия AUTOMAX KG:', dir);
+      console.log('Удалена (с затиранием) старая независимая копия AUTOMAX KG:', dir);
     } catch (err) {
       console.error('Не удалось удалить старую копию AUTOMAX KG:', dir, err);
     }
@@ -456,14 +275,14 @@ let activePty = null;
 // (AdbWinApi.dll, AdbWinUsbApi.dll) заблокированными на уровне ОС — их
 // нельзя ни перезаписать, ни переименовать, ни удалить, никакое число
 // повторных попыток здесь не поможет, пока процесс не завершится. Отсюда
-// EPERM на переименование при следующем шифровании "на месте" и при
-// пересборке расшифрованной копии для запуска.
+// EPERM на переименование/затирание файлов рабочей директории сразу после
+// закрытия AUTOMAX KG.
 //
-// Убиваем только adb.exe, запущенный именно из НАШИХ рабочих директорий —
+// Убиваем только adb.exe, запущенный именно из НАШЕЙ рабочей директории —
 // не трогаем сторонние adb.exe (например от Android Studio), если они у
 // пользователя есть.
 function killOrphanedAdbProcesses() {
-  const dirs = [AUTOMAXKG_DIR, AUTOMAXKG_DECRYPTED_DIR];
+  const dirs = [AUTOMAXKG_DIR];
   // Внутри одинарных кавычек PowerShell "\" — обычный символ, не escape (в
   // отличие от JS/JSON) — удваивать его не нужно, иначе -like перестаёт
   // совпадать с реальным путём (ровно так эта функция не сработала при
@@ -489,10 +308,6 @@ function killActivePty() {
     activePty = null;
   }
   killOrphanedAdbProcesses();
-  // Расшифрованная копия существует только на время активной работы —
-  // как только процесс завершён (сам или принудительно), убираем её сразу,
-  // не оставляя открытые файлы на диске дольше, чем реально нужно.
-  cleanupDecryptedCopy();
 }
 
 // Скачивает один файл по прямой (подписанной) ссылке в destPath, следуя
@@ -660,8 +475,9 @@ function createWindow() {
 // вместо отдельного окна ОС. cwd выставляем явно в AUTOMAXKG_DIR — раньше
 // рабочую директорию выставляла сама ОС по местоположению файла (как при
 // двойном клике), здесь мы её задаём напрямую тем же результатом.
-// Шифрование отключено (откат) — запускаем напрямую из AUTOMAXKG_DIR, без
-// промежуточного шага расшифровки во временную копию.
+// Запускаем напрямую из AUTOMAXKG_DIR, без какого-либо промежуточного шага
+// (файлы не шифруются — защита только на уровне ФС, см. комментарий у
+// restrictAccessToCurrentUser выше).
 ipcMain.handle('automaxkg-terminal-start', async (event, { cols, rows }) => {
   if (activePty) {
     return { ok: false, error: 'AUTOMAX KG уже запущена' };
@@ -730,20 +546,9 @@ ipcMain.handle('automaxkg-terminal-kill', () => {
   return { ok: true };
 });
 
-ipcMain.handle('get-device-id', () => getDeviceId());
-
 ipcMain.handle('automaxkg-status', () => {
-  // Шифрование отключено (откат) — available теперь означает просто
-  // "файлы физически на месте", без проверки/требования шифрования.
-  // Важно: если у пользователя остался .encrypted-маркер от версии ДО
-  // отката (файлы зашифрованы или побиты неудачной расшифровкой) —
-  // present всё ещё true (бинарники физически есть под своими именами),
-  // но available нарочно false, чтобы ensureAutomaxKgReady заново скачал
-  // чистые открытые файлы вместо попытки использовать потенциально
-  // повреждённые — старая директория удаляется целиком в automaxkg-download.
-  const present = isAutomaxKgPresent();
   return {
-    available: present && !isAutomaxKgEncrypted(),
+    available: isAutomaxKgPresent(),
   };
 });
 
@@ -759,17 +564,16 @@ ipcMain.handle('automaxkg-cleanup-result', () => orphanedCleanupResult);
 // проверяет, что пользователь вошёл и одобрен — здесь мы просто скачиваем
 // то, что было выдано, без повторной проверки прав (это не точка входа
 // для произвольных URL с фронтенда, ссылки всегда только от нашей функции).
-// Качает файлы во временную STAGING-папку в открытом виде (как раньше),
-// затем шифрует их в рабочую AUTOMAXKG_DIR и убирает staging целиком — на
-// диске в итоге остаётся только зашифрованная копия, ключ (key, hex-строка)
-// передаётся сюда уже полученным от automaxkg-key и живёт только в памяти
-// на время этого вызова.
-ipcMain.handle('automaxkg-download', async (event, { files, key }) => {
+// Качает файлы во временную STAGING-папку, затем переносит в рабочую
+// AUTOMAXKG_DIR и закрывает её от посторонних (скрытые+системные атрибуты +
+// права NTFS, см. ниже) — без какой-либо криптографии на этом пути, см.
+// комментарий про secureWipeFile/restrictAccessToCurrentUser выше.
+ipcMain.handle('automaxkg-download', async (event, { files }) => {
   // Защита от осиротевшего adb.exe с предыдущего запуска программы (см.
-  // killOrphanedAdbProcesses) — без этого fs.rmSync(AUTOMAXKG_DIR) ниже мог
-  // бы упасть на заблокированном файле ещё до начала докачки.
+  // killOrphanedAdbProcesses) — без этого secureWipeDir(AUTOMAXKG_STAGING_DIR)
+  // ниже мог бы упасть на заблокированном файле ещё до начала докачки.
   killOrphanedAdbProcesses();
-  fs.rmSync(AUTOMAXKG_STAGING_DIR, { recursive: true, force: true });
+  await secureWipeDir(AUTOMAXKG_STAGING_DIR);
   fs.mkdirSync(AUTOMAXKG_STAGING_DIR, { recursive: true });
   const total = files.length;
   let done = 0;
@@ -814,29 +618,25 @@ ipcMain.handle('automaxkg-download', async (event, { files, key }) => {
     return { ok: false, error: err.message };
   }
 
-  // ШИФРОВАНИЕ ОТКЛЮЧЕНО (откат): на нескольких разных марках машин
-  // (CHANGAN Q05, CHANGAN CS75 PRO) расшифровка перед запуском стабильно
-  // давала нечитаемый файл и AUTOMAX KG падала с кодом 255, блокируя
-  // реальную работу учеников. Первопричина не установлена на момент
-  // отката (наш собственный round-trip тест на другой машине проходил
-  // чисто — то есть проблема, судя по всему, зависит от конкретного
-  // окружения, которое мы не смогли воспроизвести локально) — возвращать
-  // шифрование стоит отдельным заходом, с тщательным тестированием именно
-  // на затронутых машинах, а не сейчас под давлением сломанного бизнеса.
-  // Файлы остаются на диске в открытом виде — просто переносим их из
-  // staging в рабочую директорию.
+  // Если в AUTOMAXKG_DIR уже была предыдущая копия (переустановка/повторная
+  // докачка) — затираем её перед заменой, а не просто удаляем (см.
+  // secureWipeFile выше). Само перемещение — через renameWithRetry: на
+  // Windows переименование сразу после большой файловой операции иногда
+  // ловит кратковременный EPERM (антивирус ещё держит файл), несколько
+  // попыток с паузой почти всегда решают это без участия пользователя.
   try {
-    fs.rmSync(AUTOMAXKG_DIR, { recursive: true, force: true });
-    fs.renameSync(AUTOMAXKG_STAGING_DIR, AUTOMAXKG_DIR);
+    if (fs.existsSync(AUTOMAXKG_DIR)) await secureWipeDir(AUTOMAXKG_DIR);
+    await renameWithRetry(AUTOMAXKG_STAGING_DIR, AUTOMAXKG_DIR);
   } catch (err) {
     return { ok: false, error: `Не удалось сохранить файлы: ${err.message}` };
   }
 
   try {
-    execFileSync('attrib', ['+h', AUTOMAXKG_DIR]);
+    execFileSync('attrib', ['+h', '+s', AUTOMAXKG_DIR]);
   } catch (attrErr) {
-    console.error('Скачано, но не удалось выставить атрибут "скрытый"', attrErr);
+    console.error('Скачано, но не удалось выставить атрибуты "скрытый"/"системный"', attrErr);
   }
+  restrictAccessToCurrentUser(AUTOMAXKG_DIR);
 
   return { ok: true };
 });
@@ -915,8 +715,17 @@ ipcMain.handle('start-update-download', () => {
 });
 
 app.whenReady().then(() => {
-  orphanedCleanupResult = cleanupOrphanedAutomaxKgCopies();
   createWindow();
+
+  // Затирание может занять заметное время (если реально что-то нашлось) —
+  // не блокируем открытие окна этим, запускаем в фоне. renderer запрашивает
+  // результат сам (automaxkg-cleanup-result) уже после входа, к тому моменту
+  // это почти всегда успевает завершиться.
+  cleanupOrphanedAutomaxKgCopies()
+    .then((removed) => {
+      orphanedCleanupResult = removed;
+    })
+    .catch((err) => log.error('Не удалось очистить старые копии AUTOMAX KG', err));
 
   // Обновление кода приложения (это) и обновление файлов прошивок AUTOMAX KG —
   // разные, никак не связанные механизмы. Здесь только про сам код.

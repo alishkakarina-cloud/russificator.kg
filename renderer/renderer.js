@@ -134,32 +134,11 @@ window.automaxkg.onDownloadProgress(({ done, total }) => {
 // этом компьютере (в userData/runtime-data). На новой машине их там нет —
 // список файлов с приватного хранилища и подписанные ссылки на скачивание
 // выдаёт automaxkg-manifest, доступ к которой есть только у вошедшего и
-// одобренного пользователя (проверяется на сервере по loginToken).
-// deviceId — стабильный случайный идентификатор ЭТОГО компьютера (хранится
-// в main.js через electron-store, не привязан к логину) — сервер выводит из
-// него свой ключ шифрования для этого устройства (automaxkg-key), поэтому
-// у каждого устройства свой ключ, а не один общий на всех.
-let cachedDeviceId = null;
-async function getCachedDeviceId() {
-  if (!cachedDeviceId) cachedDeviceId = await window.automaxkg.getDeviceId();
-  return cachedDeviceId;
-}
-
-// Ключ шифрования никогда не хранится на диске — запрашивается заново с
-// сервера каждый раз, когда реально нужен (первое скачивание/шифрование на
-// месте/расшифровка перед запуском). Сервер сам проверяет, что loginToken
-// сейчас approved и не кикнут — см. automaxkg-key.
-async function fetchEncryptionKey(loginToken) {
-  const deviceId = await getCachedDeviceId();
-  const { key } = await callFunction('automaxkg-key', { loginToken, deviceId });
-  return key;
-}
-
+// одобренного пользователя (проверяется на сервере по loginToken). Сами
+// файлы на диске клиента ничем не шифруются — защищены только скрытыми
+// атрибутами и правами NTFS на стороне main.js (см. комментарии там), без
+// каких-либо ключей на этом пути.
 async function ensureAutomaxKgReady(loginToken) {
-  // Шифрование отключено (откат) — available:false теперь означает и
-  // "файлов ещё нет" (новый компьютер), и "остались от версии с
-  // шифрованием, нужно перекачать чистые" (main.js сам различает и в
-  // обоих случаях заново скачивает файлы с нуля в открытом виде).
   const { available } = await window.automaxkg.status();
   if (available) return true;
 
