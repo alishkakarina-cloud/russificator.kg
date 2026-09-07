@@ -280,6 +280,13 @@ async function renameWithRetry(from, to, attempts = 5) {
 // оригинала уже нет — .enc.tmp это единственная сохранившаяся копия файла,
 // просто застрявшая под временным именем, и её нужно восстановить, а не
 // шифровать заново (что превратило бы уже зашифрованные данные в мусор).
+// Минимальный валидный зашифрованный файл — IV(12) + TAG(16), даже для
+// исходно пустого файла. Если .enc.tmp меньше этого (например процесс
+// был прерван прямо во время записи ciphertext — Alt+F4, крах, обрыв
+// питания), восстанавливать его как "готовый" нельзя: это молча подсунуло
+// бы AUTOMAX KG битый файл вместо явной, заметной ошибки.
+const MIN_VALID_ENC_SIZE = 12 + 16;
+
 function recoverLeftoverEncTmp(dir) {
   for (const rel of walkFiles(dir)) {
     if (!rel.endsWith('.enc.tmp')) continue;
@@ -287,9 +294,18 @@ function recoverLeftoverEncTmp(dir) {
     const originalPath = tmpPath.slice(0, -'.enc.tmp'.length);
     if (fs.existsSync(originalPath)) {
       fs.rmSync(tmpPath, { force: true });
-    } else {
-      fs.renameSync(tmpPath, originalPath);
+      continue;
     }
+    if (fs.statSync(tmpPath).size < MIN_VALID_ENC_SIZE) {
+      // Оригинала нет, а .enc.tmp обрезан — файл потерян безвозвратно этим
+      // путём. Удаляем огрызок, чтобы дальше отсутствие файла было явным
+      // (следующая проверка automaxkg-status увидит present:false и запустит
+      // полную докачку), а не тихой порчей на месте запуска.
+      log.error(`Повреждённый обрезанный файл шифрования потерян, требуется передокачка: ${rel}`);
+      fs.rmSync(tmpPath, { force: true });
+      continue;
+    }
+    fs.renameSync(tmpPath, originalPath);
   }
 }
 
@@ -429,6 +445,40 @@ function cleanupOrphanedAutomaxKgCopies() {
 // и раньше был возможен только один car_session.
 let activePty = null;
 
+// AUTOMAX KG (сторонняя программа — саму её не трогаем, но её поведение
+// нужно учитывать) запускает внутри себя adb.exe, который по протоколу ADB
+// стартует классический background-сервер: он намеренно отсоединяется от
+// родителя и продолжает жить самостоятельно, чтобы не переустанавливать
+// USB-соединение при каждом запуске. activePty.kill() убивает только
+// cmd.exe/.bat, которые мы сами заспавнили через node-pty — уже
+// "отсоединившийся" adb.exe этим не затрагивается и остаётся висеть в
+// системе. Пока он жив, Windows держит его .exe-образ и загруженные им DLL
+// (AdbWinApi.dll, AdbWinUsbApi.dll) заблокированными на уровне ОС — их
+// нельзя ни перезаписать, ни переименовать, ни удалить, никакое число
+// повторных попыток здесь не поможет, пока процесс не завершится. Отсюда
+// EPERM на переименование при следующем шифровании "на месте" и при
+// пересборке расшифрованной копии для запуска.
+//
+// Убиваем только adb.exe, запущенный именно из НАШИХ рабочих директорий —
+// не трогаем сторонние adb.exe (например от Android Studio), если они у
+// пользователя есть.
+function killOrphanedAdbProcesses() {
+  const dirs = [AUTOMAXKG_DIR, AUTOMAXKG_DECRYPTED_DIR];
+  // Внутри одинарных кавычек PowerShell "\" — обычный символ, не escape (в
+  // отличие от JS/JSON) — удваивать его не нужно, иначе -like перестаёт
+  // совпадать с реальным путём (ровно так эта функция не сработала при
+  // первом тесте: путь с "\\" не совпадал с реальным "\").
+  const conditions = dirs
+    .map((d) => `$_.ExecutablePath -like '${d.replace(/'/g, "''")}*'`)
+    .join(' -or ');
+  const script = `Get-CimInstance Win32_Process -Filter "Name='adb.exe'" -ErrorAction SilentlyContinue | Where-Object { ${conditions} } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 8000 });
+  } catch (err) {
+    console.error('Не удалось завершить осиротевший процесс adb.exe', err);
+  }
+}
+
 function killActivePty() {
   if (activePty) {
     try {
@@ -438,6 +488,7 @@ function killActivePty() {
     }
     activePty = null;
   }
+  killOrphanedAdbProcesses();
   // Расшифрованная копия существует только на время активной работы —
   // как только процесс завершён (сам или принудительно), убираем её сразу,
   // не оставляя открытые файлы на диске дольше, чем реально нужно.
@@ -720,6 +771,10 @@ ipcMain.handle('automaxkg-cleanup-result', () => orphanedCleanupResult);
 // передаётся сюда уже полученным от automaxkg-key и живёт только в памяти
 // на время этого вызова.
 ipcMain.handle('automaxkg-download', async (event, { files, key }) => {
+  // Защита от осиротевшего adb.exe с предыдущего запуска программы (см.
+  // killOrphanedAdbProcesses) — без этого fs.rmSync(AUTOMAXKG_DIR) ниже мог
+  // бы упасть на заблокированном файле ещё до начала докачки.
+  killOrphanedAdbProcesses();
   fs.rmSync(AUTOMAXKG_STAGING_DIR, { recursive: true, force: true });
   fs.mkdirSync(AUTOMAXKG_STAGING_DIR, { recursive: true });
   const total = files.length;
@@ -785,6 +840,10 @@ ipcMain.handle('automaxkg-download', async (event, { files, key }) => {
 // Миграция: файлы AUTOMAX KG уже есть на диске в ОТКРЫТОМ виде (скачаны до
 // появления шифрования) — шифруем на месте, без повторного скачивания 3ГБ.
 ipcMain.handle('automaxkg-encrypt-existing', async (_event, { key }) => {
+  // Та же защита — осиротевший adb.exe с предыдущего запуска держит свой
+  // .exe и загруженные DLL заблокированными, шифрование "на месте" падает
+  // на переименовании именно этих файлов независимо от числа ретраев.
+  killOrphanedAdbProcesses();
   try {
     await encryptInPlace(AUTOMAXKG_DIR, keyHexToBuffer(key));
     return { ok: true };
