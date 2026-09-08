@@ -403,7 +403,6 @@ function reassembleParts(dir) {
 }
 
 const MAIN_SIZE = { width: 480, height: 640 };
-const ADMIN_SIZE = { width: 860, height: 700 };
 const TERMINAL_SIZE = { width: 900, height: 640 };
 
 let mainWindow = null;
@@ -671,15 +670,6 @@ ipcMain.handle('session-touch', () => {
 ipcMain.handle('get-app-version', () => app.getVersion());
 
 ipcMain.handle('get-device-info', () => `${os.type()} ${os.release()} (${os.arch()})`);
-
-ipcMain.handle('set-admin-mode', (_event, isAdmin) => {
-  if (!mainWindow) return;
-  const size = isAdmin ? ADMIN_SIZE : MAIN_SIZE;
-  mainWindow.setResizable(true);
-  mainWindow.setSize(size.width, size.height);
-  mainWindow.center();
-  mainWindow.setResizable(isAdmin);
-});
 
 ipcMain.handle('set-terminal-mode', (_event, isTerminal) => {
   if (!mainWindow) return;

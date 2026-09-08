@@ -277,52 +277,82 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ ok: true }));
   }
 
-  // 2) Админ нажал "Принять" / "Отклонить"
+  // 2) Админ нажал одну из inline-кнопок
   const cq = update.callback_query;
   if (cq) {
     const adminId = cq.from.id;
-    const [action, token] = (cq.data ?? '').split(':');
+    const [action, refId] = (cq.data ?? '').split(':');
 
     if (!(await isAdminUsername(cq.from.username))) {
       await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'Нет прав.', show_alert: true });
       return new Response(JSON.stringify({ ok: true }));
     }
 
-    if (action !== 'approve' && action !== 'reject') {
-      await tg('answerCallbackQuery', { callback_query_id: cq.id });
+    // 2а) "Принять"/"Отклонить" вход в приложение (telegram_login_tokens) —
+    // как было. НЕ путать с блоком 2б ниже: разные таблицы, разный
+    // callback_data, разный смысл (это про вход, не про заявку на работу
+    // с машиной).
+    if (action === 'approve' || action === 'reject') {
+      const { data: row } = await supabase
+        .from('telegram_login_tokens')
+        .update({
+          status: action === 'approve' ? 'approved' : 'rejected',
+          decided_at: new Date().toISOString(),
+          decided_by: adminId,
+        })
+        .eq('token', refId)
+        .eq('status', 'pending_admin')
+        .select()
+        .maybeSingle();
+
+      if (row) {
+        await logEvent(row.telegram_user?.id ?? null, action === 'approve' ? 'login_approved' : 'login_rejected', {
+          auto: false,
+          decided_by: adminId,
+        });
+      }
+
+      const resultText = row
+        ? (action === 'approve' ? '✅ Принято' : '⛔ Отклонено')
+        : 'Уже обработано другим админом';
+
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: resultText });
+      await tg('editMessageText', {
+        chat_id: cq.message.chat.id,
+        message_id: cq.message.message_id,
+        text: `${cq.message.text}\n\n${resultText}`,
+      });
       return new Response(JSON.stringify({ ok: true }));
     }
 
-    const { data: row } = await supabase
-      .from('telegram_login_tokens')
-      .update({
-        status: action === 'approve' ? 'approved' : 'rejected',
-        decided_at: new Date().toISOString(),
-        decided_by: adminId,
-      })
-      .eq('token', token)
-      .eq('status', 'pending_admin')
-      .select()
-      .maybeSingle();
+    // 2б) "Подтвердить"/"Отклонить" заявку на активацию (activation_requests)
+    // — отдельный механизм от входа (см. activation-request). Пользователь
+    // здесь уже вошёл и выбрал машину; в Telegram он не переходит вообще —
+    // только сайт клиента опрашивает статус этой заявки.
+    if (action === 'activate_confirm' || action === 'activate_reject') {
+      const newStatus = action === 'activate_confirm' ? 'confirmed' : 'rejected';
+      const { data: row } = await supabase
+        .from('activation_requests')
+        .update({ status: newStatus, decided_at: new Date().toISOString(), decided_by: adminId })
+        .eq('id', refId)
+        .eq('status', 'pending')
+        .select()
+        .maybeSingle();
 
-    if (row) {
-      await logEvent(row.telegram_user?.id ?? null, action === 'approve' ? 'login_approved' : 'login_rejected', {
-        auto: false,
-        decided_by: adminId,
+      const resultText = row
+        ? (newStatus === 'confirmed' ? '✅ Подтверждено' : '⛔ Отклонено')
+        : 'Уже обработано (другим админом или отменено пользователем)';
+
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: resultText });
+      await tg('editMessageText', {
+        chat_id: cq.message.chat.id,
+        message_id: cq.message.message_id,
+        text: `${cq.message.text}\n\n${resultText}`,
       });
+      return new Response(JSON.stringify({ ok: true }));
     }
 
-    const resultText = row
-      ? (action === 'approve' ? '✅ Принято' : '⛔ Отклонено')
-      : 'Уже обработано другим админом';
-
-    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: resultText });
-    await tg('editMessageText', {
-      chat_id: cq.message.chat.id,
-      message_id: cq.message.message_id,
-      text: `${cq.message.text}\n\n${resultText}`,
-    });
-
+    await tg('answerCallbackQuery', { callback_query_id: cq.id });
     return new Response(JSON.stringify({ ok: true }));
   }
 

@@ -23,7 +23,6 @@ contextBridge.exposeInMainWorld('app', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   getVersion: () => ipcRenderer.invoke('get-app-version'),
   getDeviceInfo: () => ipcRenderer.invoke('get-device-info'),
-  setAdminMode: (isAdmin) => ipcRenderer.invoke('set-admin-mode', isAdmin),
   setTerminalMode: (isTerminal) => ipcRenderer.invoke('set-terminal-mode', isTerminal),
   getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
   startUpdateDownload: () => ipcRenderer.invoke('start-update-download'),

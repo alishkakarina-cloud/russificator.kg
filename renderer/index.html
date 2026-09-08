@@ -52,10 +52,17 @@
     <button id="download-retry-btn" class="secondary-btn" hidden>Повторить</button>
   </main>
 
+  <main class="screen" id="screen-activation-waiting" hidden>
+    <button class="logout-btn logout-btn-corner">Выйти</button>
+    <h1>russificator.kg</h1>
+    <div class="spinner"></div>
+    <p class="subtitle">Ожидаем подтверждения администратора, пожалуйста, подождите...</p>
+    <button id="cancel-activation-btn" class="secondary-btn">Отменить</button>
+  </main>
+
   <main class="screen" id="screen-main" hidden>
-    <button id="admin-open-btn" class="admin-open-btn">Админ панель</button>
     <button id="support-open-btn" class="support-open-btn">Написать администратору</button>
-    <button id="logout-btn" class="logout-btn">Выйти</button>
+    <button id="logout-btn" class="logout-btn logout-btn-corner">Выйти</button>
     <h1>russificator.kg</h1>
     <p class="subtitle">Русификация автомобилей</p>
 
@@ -76,7 +83,7 @@
     <p id="status" class="status"></p>
 
     <button id="finish-session-btn" class="finish-btn" hidden>Завершено</button>
-    <button id="car-activate-btn" class="activate-btn" hidden>Создать аккаунт</button>
+    <button id="car-activate-btn" class="activate-btn" hidden>Активация</button>
   </main>
 
   <main class="screen" id="screen-terminal" hidden>
@@ -101,60 +108,6 @@
     <p id="support-status" class="status"></p>
   </main>
 
-  <main class="screen" id="screen-admin" hidden>
-    <div class="admin-shell">
-      <aside class="admin-sidebar">
-        <button id="admin-back-btn" class="admin-back-btn">← Назад</button>
-        <nav class="admin-nav">
-          <button id="admin-tab-history" class="admin-nav-btn active">История</button>
-          <div class="date-picker">
-            <button id="date-picker-btn" class="date-picker-btn">
-              <span class="date-picker-caption">Дата</span>
-              <span id="date-picker-label"></span>
-            </button>
-            <div id="admin-calendar" class="calendar-popover" hidden></div>
-          </div>
-          <button id="admin-tab-users" class="admin-nav-btn">Пользователи</button>
-          <button id="admin-tab-whitelist" class="admin-nav-btn">Whitelist</button>
-          <button id="admin-tab-chat" class="admin-nav-btn">Переписка</button>
-        </nav>
-      </aside>
-
-      <section class="admin-content">
-        <div id="admin-history">
-          <div id="admin-sessions-list" class="sessions-table"></div>
-        </div>
-        <div id="admin-users" hidden>
-          <div id="admin-users-list" class="users-table"></div>
-        </div>
-        <div id="admin-whitelist" hidden>
-          <p class="subtitle" style="margin:0 0 14px;">
-            Регистрация возможна только для юзернеймов из этого списка.
-          </p>
-          <div class="whitelist-add-row">
-            <input id="whitelist-input" type="text" placeholder="Telegram-юзернейм (с @ или без)" class="whitelist-input" />
-            <button id="whitelist-add-btn" class="primary-btn whitelist-add-btn">Добавить</button>
-          </div>
-          <p id="whitelist-status" class="status"></p>
-          <div id="whitelist-list" class="whitelist-list"></div>
-        </div>
-        <div id="admin-chat" hidden>
-          <div class="chat-shell">
-            <div id="chat-threads-list" class="chat-threads-list"></div>
-            <div class="chat-conversation">
-              <div id="chat-conversation-title" class="chat-conversation-title">Выберите переписку слева</div>
-              <div id="chat-conversation-messages" class="chat-conversation-messages"></div>
-              <div class="chat-input-row">
-                <input id="chat-reply-input" type="text" class="text-input" placeholder="Ответ..." disabled />
-                <button id="chat-reply-send-btn" class="primary-btn" disabled>Отправить</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
-  </main>
-
   <!-- Принудительное обновление (min_version) — оверлей поверх ЛЮБОГО текущего
        экрана, не отдельный screen. Специально без крестика/клика-мимо/Esc —
        единственный выход это обновиться, см. renderer.js: checkForcedUpdate. -->
@@ -169,16 +122,6 @@
           <span id="forced-update-btn-subtitle" class="update-btn-subtitle">Скачать</span>
         </span>
       </button>
-    </div>
-  </div>
-
-  <div id="session-detail-overlay" class="modal-overlay" hidden>
-    <div class="modal-box">
-      <div class="modal-header">
-        <h3 id="session-detail-title">Сессия</h3>
-        <button id="session-detail-close" class="modal-close-btn">✕</button>
-      </div>
-      <div id="session-detail-events" class="event-log"></div>
     </div>
   </div>
 

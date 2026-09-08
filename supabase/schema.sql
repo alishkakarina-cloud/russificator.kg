@@ -167,3 +167,31 @@ insert into public.admin_usernames (username) values
   ('fxallish'),
   ('wiqqq99')
 on conflict do nothing;
+
+-- Заявки на активацию (выбор марки/модели -> подтверждение админом в боте).
+-- Отдельная таблица и отдельный механизм от входа (telegram_login_tokens) —
+-- сознательно не объединяем, чтобы не путать вход в приложение и заявку на
+-- работу с конкретной машиной. Создаёт/меняет только activation-request
+-- (service_role) и telegram-webhook (callback activate_confirm/activate_reject).
+-- anon может только читать конкретную заявку по её id (случайный UUID,
+-- узнать который можно только получив в ответ на создание) — тот же принцип,
+-- что и у telegram_login_tokens, для опроса статуса с клиента.
+create table if not exists public.activation_requests (
+  id uuid primary key default gen_random_uuid(),
+  telegram_id bigint not null,
+  telegram_username text,
+  telegram_name text,
+  brand text not null,
+  model text not null,
+  status text not null default 'pending', -- pending | confirmed | rejected | cancelled
+  created_at timestamptz not null default now(),
+  decided_at timestamptz,
+  decided_by bigint
+);
+
+alter table public.activation_requests enable row level security;
+
+create policy "anon can read activation requests"
+  on public.activation_requests for select
+  to anon
+  using (true);

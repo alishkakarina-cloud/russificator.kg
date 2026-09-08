@@ -16,9 +16,9 @@ const screens = {
   rejected: document.getElementById('screen-rejected'),
   downloading: document.getElementById('screen-downloading'),
   main: document.getElementById('screen-main'),
+  activationWaiting: document.getElementById('screen-activation-waiting'),
   terminal: document.getElementById('screen-terminal'),
   support: document.getElementById('screen-support'),
-  admin: document.getElementById('screen-admin'),
 };
 const waitingText = document.getElementById('waiting-text');
 const loginStatus = document.getElementById('login-status');
@@ -29,7 +29,7 @@ let pollTimer = null;
 // (см. touchSessionOrKick), только "Завершено" её закрывает.
 let activeCarSession = null;
 // Марка/модель, выбранная в списке, но ещё не подтверждённая кнопкой
-// "Создать аккаунт" — car_session на сервере ещё не создана, AUTOMAX KG ещё не
+// "Активация" — car_session на сервере ещё не создана, AUTOMAX KG ещё не
 // запущена. Отдельно от activeCarSession (та означает "работа уже реально
 // идёт").
 let selectedCarModel = null;
@@ -77,7 +77,11 @@ async function callFunction(name, body) {
 }
 
 const carSession = (action, payload) => callFunction('car-session', { action, ...payload });
-const adminAction = (action, payload) => callFunction('admin-action', { action, ...payload });
+// Заявка на активацию (после выбора машины) — отдельный, самостоятельный
+// механизм от входа в приложение (Telegram-логин выше). Пользователь сюда
+// уже вошёл; это про подтверждение админом самой работы с машиной, и
+// пользователь при этом никуда не переходит — только опрашивает статус.
+const activationRequest = (action, payload) => callFunction('activation-request', { action, ...payload });
 
 async function startTelegramLoginToken(purpose = 'login') {
   const res = await fetch(`${SUPABASE_URL}/functions/v1/telegram-login-start`, {
@@ -362,7 +366,6 @@ const carActivateBtn = document.getElementById('car-activate-btn');
 const activeSessionBox = document.getElementById('active-session');
 const activeSessionLabel = document.getElementById('active-session-label');
 const finishBtn = document.getElementById('finish-session-btn');
-const adminOpenBtn = document.getElementById('admin-open-btn');
 
 const terminalFinishBtn = document.getElementById('finish-terminal-btn');
 const terminalCarLabel = document.getElementById('terminal-car-label');
@@ -658,13 +661,30 @@ document.addEventListener('click', (e) => {
 // Клик по строке списка — только выбор (марка+модель одной строкой, как и
 // была устроена сама механика списка, её не трогаем). Реальный запуск
 // (car_session на сервере + AUTOMAX KG) происходит отдельно, по кнопке
-// "Создать аккаунт" — см. activateSelectedCar ниже.
+// "Активация" — см. activateSelectedCar ниже.
 function chooseCarModel(model) {
   carDropdownList.hidden = true;
   selectedCarModel = model;
   carDropdownBtn.textContent = `${model.brand} ${model.model} ✓`;
   carActivateBtn.hidden = false;
   status.textContent = '';
+}
+
+// Заявка на активацию: пользователь остаётся на сайте (экран ожидания),
+// подтверждает админ прямо в боте — см. activation-request и telegram-webhook
+// (блок 2б там). Это НЕ то же самое, что вход в приложение через Telegram
+// выше по файлу — отдельная таблица (activation_requests), отдельный
+// callback_data в боте (activate_confirm/activate_reject), пользователь в
+// Telegram не переходит вообще ни на одном шаге.
+const ACTIVATION_POLL_INTERVAL_MS = 4000;
+let activationPollTimer = null;
+let activeActivationRequestId = null;
+
+function stopActivationPoll() {
+  if (activationPollTimer) {
+    clearInterval(activationPollTimer);
+    activationPollTimer = null;
+  }
 }
 
 async function activateSelectedCar() {
@@ -676,42 +696,103 @@ async function activateSelectedCar() {
     return;
   }
   carActivateBtn.disabled = true;
-  status.textContent = 'Запуск...';
-  // Тот же диплинк и та же проверка (только t.me/ ссылки, см. main.js), что
-  // уже используется для входа — просто открывает бота, без каких-либо
-  // параметров и без завязки на конкретную сессию/одобрение. НЕ ждём эту
-  // операцию (нет await) — открытие внешнего приложения через shell.openExternal
-  // на Windows может занимать заметное время (а в редких случаях зависать,
-  // если ОС показывает диалог выбора приложения не в фокусе) — реального
-  // запуска работы с машиной это никак не касается, ждать его нет причины.
-  window.app.openExternal(`https://t.me/${BOT_USERNAME}`).catch((e) => console.error('Не удалось открыть Telegram', e));
-
+  status.textContent = 'Отправка заявки...';
   try {
-    const { session: carSess } = await carSession('start', {
+    const { request } = await activationRequest('create', {
       loginToken: session.loginToken,
       brand: model.brand,
       model: model.model,
     });
-    activeCarSession = carSess;
-    selectedCarModel = null;
-    carDropdownBtn.textContent = 'Начать работу';
-    carActivateBtn.hidden = true;
     status.textContent = '';
-    await enterTerminalScreen(carSess, session.loginToken);
+    carActivateBtn.hidden = true;
+    await enterActivationWaitingScreen(request, session.loginToken, model);
   } catch (err) {
-    if (err.status === 409 && err.data && err.data.session) {
-      activeCarSession = err.data.session;
+    status.textContent = 'Ошибка: ' + err.message;
+  } finally {
+    carActivateBtn.disabled = false;
+  }
+}
+
+async function enterActivationWaitingScreen(request, loginToken, model) {
+  activeActivationRequestId = request.id;
+  showScreen('activationWaiting');
+
+  if (request.status === 'confirmed') {
+    await proceedAfterActivationConfirmed(model, loginToken);
+    return;
+  }
+
+  stopActivationPoll();
+  activationPollTimer = setInterval(async () => {
+    if (!activeActivationRequestId) {
+      stopActivationPoll();
+      return;
+    }
+    let rows;
+    try {
+      rows = await supabaseRequest(`activation_requests?id=eq.${activeActivationRequestId}&select=status`);
+    } catch (err) {
+      return; // сетевой сбой при опросе — пробуем на следующем тике, не прерываем
+    }
+    const row = rows && rows[0];
+    if (!row) return;
+
+    if (row.status === 'confirmed') {
+      stopActivationPoll();
+      await proceedAfterActivationConfirmed(model, loginToken);
+    } else if (row.status === 'rejected') {
+      stopActivationPoll();
+      activeActivationRequestId = null;
       selectedCarModel = null;
       carDropdownBtn.textContent = 'Начать работу';
-      carActivateBtn.hidden = true;
+      showScreen('main');
+      status.textContent = 'Администратор отклонил заявку.';
+    }
+  }, ACTIVATION_POLL_INTERVAL_MS);
+}
+
+// То, что раньше происходило сразу по клику "Активация" — реальный запуск
+// работы с машиной, теперь только после подтверждения админом.
+async function proceedAfterActivationConfirmed(model, loginToken) {
+  activeActivationRequestId = null;
+  selectedCarModel = null;
+  carDropdownBtn.textContent = 'Начать работу';
+  try {
+    const { session: carSess } = await carSession('start', {
+      loginToken,
+      brand: model.brand,
+      model: model.model,
+    });
+    activeCarSession = carSess;
+    status.textContent = '';
+    await enterTerminalScreen(carSess, loginToken);
+  } catch (err) {
+    showScreen('main');
+    if (err.status === 409 && err.data && err.data.session) {
+      activeCarSession = err.data.session;
       renderActiveSession();
       status.textContent = 'Уже есть незавершённая работа — сначала нажмите «Завершено».';
     } else {
       status.textContent = 'Ошибка: ' + err.message;
     }
-  } finally {
-    carActivateBtn.disabled = false;
   }
+}
+
+// Отменить заявку по инициативе пользователя (экран ожидания, п.5.8 — без
+// таймаута, но с явной кнопкой отмены). Выбор марки/модели не сбрасываем —
+// можно сразу нажать "Активация" ещё раз без повторного выбора.
+async function cancelActivationRequest() {
+  const requestId = activeActivationRequestId;
+  stopActivationPoll();
+  activeActivationRequestId = null;
+  showScreen('main');
+  carActivateBtn.hidden = !selectedCarModel;
+  if (!requestId) return;
+  const session = await window.sessionStore.get();
+  if (!session) return;
+  await activationRequest('cancel', { loginToken: session.loginToken, requestId }).catch((e) =>
+    console.error('Не удалось отменить заявку на активацию', e)
+  );
 }
 
 function renderActiveSession() {
@@ -856,10 +937,11 @@ async function logout() {
   stopHeartbeat();
   stopKickPoll();
   stopPolling();
+  stopActivationPoll();
+  activeActivationRequestId = null;
 
   localStorage.removeItem(STORAGE_KEY);
   await window.sessionStore.clear().catch((e) => console.error('Не удалось очистить локальную сессию при выходе', e));
-  await window.app.setAdminMode(false).catch(() => {});
   await window.app.setTerminalMode(false).catch(() => {});
 
   selectedCarModel = null;
@@ -873,11 +955,14 @@ carDropdownBtn.addEventListener('click', toggleCarDropdown);
 carActivateBtn.addEventListener('click', activateSelectedCar);
 finishBtn.addEventListener('click', finishSession);
 terminalFinishBtn.addEventListener('click', finishSession);
-document.getElementById('logout-btn').addEventListener('click', logout);
+// Кнопка "Выйти" повторяется на каждом экране, доступном только после
+// входа (сейчас — главный экран и экран ожидания подтверждения активации).
+document.querySelectorAll('.logout-btn').forEach((btn) => btn.addEventListener('click', logout));
 
 document.getElementById('telegram-login-btn').addEventListener('click', beginTelegramLogin);
 document.getElementById('cancel-login-btn').addEventListener('click', cancelLogin);
 document.getElementById('retry-login-btn').addEventListener('click', retryLogin);
+document.getElementById('cancel-activation-btn').addEventListener('click', cancelActivationRequest);
 
 // ------------------------- Обновление: кнопка на входе + принудительный экран -------------------------
 // electron-updater только проверяет наличие обновления сам при старте
@@ -998,506 +1083,6 @@ async function checkForcedUpdate() {
   return false;
 }
 
-// ------------------------------- Админ-панель -------------------------------
-
-let calendarViewDate = new Date();
-let selectedDate = null;
-
-function todayLocalStr() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-}
-
-function fmtDateLabel(dateStr) {
-  const [y, m, d] = dateStr.split('-');
-  return `${d}.${m}.${y}`;
-}
-
-async function openAdminPanel() {
-  await window.app.setAdminMode(true);
-  showScreen('admin');
-  switchAdminTab('history');
-
-  // По умолчанию сразу сегодня — не нужно каждый раз выбирать дату вручную.
-  selectedDate = todayLocalStr();
-  calendarViewDate = new Date();
-  document.getElementById('date-picker-label').textContent = fmtDateLabel(selectedDate);
-  renderCalendar();
-  loadSessionsForDate(selectedDate);
-}
-
-function toggleCalendarPopover() {
-  const popover = document.getElementById('admin-calendar');
-  popover.hidden = !popover.hidden;
-}
-
-document.addEventListener('click', (e) => {
-  const popover = document.getElementById('admin-calendar');
-  const btn = document.getElementById('date-picker-btn');
-  if (!popover.hidden && !popover.contains(e.target) && e.target !== btn) {
-    popover.hidden = true;
-  }
-});
-
-async function closeAdminPanel() {
-  await window.app.setAdminMode(false);
-  showScreen('main');
-  await initMainScreen();
-}
-
-function switchAdminTab(tab) {
-  const historyTab = document.getElementById('admin-tab-history');
-  const usersTab = document.getElementById('admin-tab-users');
-  const whitelistTab = document.getElementById('admin-tab-whitelist');
-  const chatTab = document.getElementById('admin-tab-chat');
-  const historySection = document.getElementById('admin-history');
-  const usersSection = document.getElementById('admin-users');
-  const whitelistSection = document.getElementById('admin-whitelist');
-  const chatSection = document.getElementById('admin-chat');
-
-  historyTab.classList.toggle('active', tab === 'history');
-  usersTab.classList.toggle('active', tab === 'users');
-  whitelistTab.classList.toggle('active', tab === 'whitelist');
-  chatTab.classList.toggle('active', tab === 'chat');
-  historySection.hidden = tab !== 'history';
-  usersSection.hidden = tab !== 'users';
-  whitelistSection.hidden = tab !== 'whitelist';
-  chatSection.hidden = tab !== 'chat';
-
-  if (tab === 'users') loadUsersList();
-  if (tab === 'whitelist') loadWhitelist();
-  if (tab === 'chat') loadChatThreads();
-}
-
-function renderCalendar() {
-  const container = document.getElementById('admin-calendar');
-  const year = calendarViewDate.getFullYear();
-  const month = calendarViewDate.getMonth();
-  const monthNames = [
-    'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
-    'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
-  ];
-
-  const firstDay = new Date(year, month, 1);
-  const startOffset = (firstDay.getDay() + 6) % 7; // понедельник = 0
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  // Локальная дата, не UTC (toISOString() сдвигал бы "сегодня" на вчера
-  // ночью в часовых поясах восточнее UTC).
-  const todayStr = todayLocalStr();
-
-  let html = `<div class="calendar-header">
-    <button class="calendar-nav-btn" id="cal-prev">‹</button>
-    <span>${monthNames[month]} ${year}</span>
-    <button class="calendar-nav-btn" id="cal-next">›</button>
-  </div>
-  <div class="calendar-grid">`;
-
-  for (const dow of ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']) {
-    html += `<div class="calendar-dow">${dow}</div>`;
-  }
-  for (let i = 0; i < startOffset; i++) {
-    html += `<div class="calendar-day empty"></div>`;
-  }
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const classes = ['calendar-day'];
-    if (dateStr === todayStr) classes.push('today');
-    if (dateStr === selectedDate) classes.push('selected');
-    html += `<div class="${classes.join(' ')}" data-date="${dateStr}">${d}</div>`;
-  }
-  html += '</div>';
-  container.innerHTML = html;
-
-  document.getElementById('cal-prev').addEventListener('click', () => {
-    calendarViewDate = new Date(year, month - 1, 1);
-    renderCalendar();
-  });
-  document.getElementById('cal-next').addEventListener('click', () => {
-    calendarViewDate = new Date(year, month + 1, 1);
-    renderCalendar();
-  });
-  container.querySelectorAll('.calendar-day[data-date]').forEach((el) => {
-    el.addEventListener('click', () => {
-      selectedDate = el.dataset.date;
-      document.getElementById('date-picker-label').textContent = fmtDateLabel(selectedDate);
-      renderCalendar();
-      document.getElementById('admin-calendar').hidden = true;
-      loadSessionsForDate(selectedDate);
-    });
-  });
-}
-
-function fmtDate(iso) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
-}
-
-function fmtOnlyTime(iso) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-}
-
-async function loadSessionsForDate(date) {
-  const listEl = document.getElementById('admin-sessions-list');
-  listEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
-  const session = await window.sessionStore.get();
-  // Границы суток считаем в локальном часовом поясе (date — локальный
-  // Y-M-D с календаря), а на сервер шлём уже готовые UTC-инстанты.
-  const [y, m, d] = date.split('-').map(Number);
-  const startIso = new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
-  const endIso = new Date(y, m - 1, d + 1, 0, 0, 0, 0).toISOString();
-  try {
-    const { sessions } = await adminAction('list_sessions_by_date', { adminToken: session.loginToken, startIso, endIso });
-    listEl.innerHTML = '';
-    listEl.appendChild(renderSessionsHeader());
-    if (!sessions.length) {
-      const empty = document.createElement('p');
-      empty.className = 'empty-note';
-      empty.textContent = 'За этот день сессий нет.';
-      listEl.appendChild(empty);
-      return;
-    }
-    for (const s of sessions) {
-      listEl.appendChild(renderSessionRow(s, session.loginToken));
-    }
-  } catch (err) {
-    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
-  }
-}
-
-function renderSessionsHeader() {
-  const header = document.createElement('div');
-  header.className = 'session-header-row';
-  header.innerHTML = `
-    <div>Ник</div>
-    <div>Дата</div>
-    <div>Марка/модель</div>
-    <div>Старт</div>
-    <div>Финиш</div>
-    <div></div>
-  `;
-  return header;
-}
-
-function renderSessionRow(s, adminToken) {
-  const row = document.createElement('div');
-  row.className = 'session-row session-row-clickable';
-  row.title = 'Открыть подробный лог этой сессии';
-
-  // username приоритетнее имени: имя в Telegram может быть чем угодно
-  // (например один символ), а username — куда более надёжный и узнаваемый
-  // идентификатор для бизнеса.
-  const name = s.telegram_username ? `@${s.telegram_username}` : (s.telegram_name || `id ${s.telegram_id}`);
-  row.innerHTML = `
-    <div class="col col-name">${name}</div>
-    <div class="col col-muted">${fmtDate(s.started_at)}</div>
-    <div class="col">${s.brand} ${s.model}</div>
-    <div class="col col-muted">${fmtOnlyTime(s.started_at)}</div>
-    <div class="col col-muted">${s.ended_at ? fmtOnlyTime(s.ended_at) : 'в процессе'}</div>
-    <div class="paid-toggle">
-      <button class="paid-toggle-btn ${s.paid ? 'paid' : 'unpaid'}">
-        <span class="paid-dot-icon"></span>
-        <span class="paid-label">${s.paid ? 'Оплачено' : 'Не оплачено'}</span>
-      </button>
-      <div class="paid-options" hidden>
-        <button class="paid-choice green" title="Оплачено"><span class="paid-dot-icon"></span>Оплачено</button>
-        <button class="paid-choice red" title="Не оплачено"><span class="paid-dot-icon"></span>Не оплачено</button>
-      </div>
-    </div>
-  `;
-
-  const toggleBtn = row.querySelector('.paid-toggle-btn');
-  const options = row.querySelector('.paid-options');
-  toggleBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    document.querySelectorAll('.paid-options').forEach((el) => { if (el !== options) el.hidden = true; });
-    options.hidden = !options.hidden;
-  });
-
-  row.querySelector('.paid-choice.green').addEventListener('click', async (e) => {
-    e.stopPropagation();
-    await setPaid(s.id, true, adminToken, toggleBtn, options);
-  });
-  row.querySelector('.paid-choice.red').addEventListener('click', async (e) => {
-    e.stopPropagation();
-    await setPaid(s.id, false, adminToken, toggleBtn, options);
-  });
-
-  row.addEventListener('click', () => openSessionDetail(s, name, adminToken));
-
-  return row;
-}
-
-const EVENT_LABELS = {
-  telegram_login: 'Вход через Telegram',
-  login_approved: 'Вход одобрен',
-  login_rejected: 'Вход отклонён',
-  user_kicked: 'Пользователь кикнут',
-  user_unkicked: 'Доступ восстановлен',
-  session_started: 'Выбрана марка/модель, сессия начата',
-  automaxkg_launched: 'AUTOMAX KG запущен',
-  automaxkg_launch_error: 'Ошибка запуска AUTOMAX KG',
-  session_finished: 'Нажато «Завершено»',
-  session_expired: 'Локальная сессия истекла (20 минут)',
-};
-
-function fmtEventDetail(ev) {
-  const d = ev.detail;
-  if (!d) return '';
-  if (ev.event_type === 'session_started') return `${d.brand ?? ''} ${d.model ?? ''}`.trim();
-  if (ev.event_type === 'automaxkg_launch_error') return d.error ?? '';
-  if (ev.event_type === 'login_approved' || ev.event_type === 'login_rejected') {
-    return d.auto ? `авто (${d.reason})` : `решение админа ${d.decided_by ?? ''}`;
-  }
-  if (ev.event_type === 'user_kicked') return `админ ${d.blocked_by ?? ''}`;
-  return '';
-}
-
-async function openSessionDetail(s, name, adminToken) {
-  const overlay = document.getElementById('session-detail-overlay');
-  const title = document.getElementById('session-detail-title');
-  const list = document.getElementById('session-detail-events');
-  title.textContent = `${name} — ${s.brand} ${s.model}`;
-  list.innerHTML = '<p class="empty-note">Загрузка...</p>';
-  overlay.hidden = false;
-
-  try {
-    const { events } = await adminAction('list_session_events', { adminToken, sessionId: s.id });
-    if (!events.length) {
-      list.innerHTML = '<p class="empty-note">Событий не зафиксировано.</p>';
-      return;
-    }
-    list.innerHTML = '';
-    for (const ev of events) {
-      const row = document.createElement('div');
-      row.className = 'event-row';
-      let label = EVENT_LABELS[ev.event_type] || ev.event_type;
-      if (ev.event_type === 'session_finished' && ev.detail?.auto) {
-        label =
-          ev.detail.reason === 'timer_expired'
-            ? 'Прервана истечением таймера (20 минут)'
-            : ev.detail.reason === 'kicked'
-            ? 'Прервана мгновенным киком администратора'
-            : 'Закрыта автоматически (осталась незавершённой)';
-      }
-      const detailText = fmtEventDetail(ev);
-      row.innerHTML = `
-        <div class="event-time">${fmtDate(ev.created_at)} ${fmtOnlyTime(ev.created_at)}</div>
-        <div class="event-label">${label}</div>
-        <div class="event-detail">${detailText}</div>
-      `;
-      list.appendChild(row);
-    }
-  } catch (err) {
-    list.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
-  }
-}
-
-// Переиспользует тот же оверлей, что и детали сессии (session-detail-*) —
-// показывает последние входы: город/страна по IP, сам IP, устройство.
-async function openLoginHistory(u, name, adminToken) {
-  const overlay = document.getElementById('session-detail-overlay');
-  const title = document.getElementById('session-detail-title');
-  const list = document.getElementById('session-detail-events');
-  title.textContent = `${name} — история входов`;
-  list.innerHTML = '<p class="empty-note">Загрузка...</p>';
-  overlay.hidden = false;
-
-  try {
-    const { logins } = await adminAction('list_login_history', { adminToken, targetTelegramId: u.telegram_id });
-    if (!logins.length) {
-      list.innerHTML = '<p class="empty-note">Входов не зафиксировано.</p>';
-      return;
-    }
-    list.innerHTML = '';
-    for (const l of logins) {
-      const row = document.createElement('div');
-      row.className = 'event-row';
-      const place = [l.city, l.country].filter(Boolean).join(', ') || 'город неизвестен';
-      row.innerHTML = `
-        <div class="event-time">${fmtDate(l.created_at)} ${fmtOnlyTime(l.created_at)}</div>
-        <div class="event-label">${place}</div>
-        <div class="event-detail">${l.ip ?? ''}${l.device ? ' · ' + l.device : ''}</div>
-      `;
-      list.appendChild(row);
-    }
-  } catch (err) {
-    list.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
-  }
-}
-
-document.getElementById('session-detail-close').addEventListener('click', () => {
-  document.getElementById('session-detail-overlay').hidden = true;
-});
-document.getElementById('session-detail-overlay').addEventListener('click', (e) => {
-  if (e.target.id === 'session-detail-overlay') e.target.hidden = true;
-});
-
-async function setPaid(sessionId, paid, adminToken, toggleBtn, options) {
-  try {
-    await adminAction('set_paid', { adminToken, sessionId, paid });
-    toggleBtn.classList.toggle('paid', paid);
-    toggleBtn.querySelector('.paid-label').textContent = paid ? 'Оплачено' : 'Не оплачено';
-    toggleBtn.classList.toggle('unpaid', !paid);
-    options.hidden = true;
-  } catch (err) {
-    console.error('Не удалось изменить статус оплаты', err);
-  }
-}
-
-document.addEventListener('click', () => {
-  document.querySelectorAll('.paid-options').forEach((el) => { el.hidden = true; });
-});
-
-async function loadUsersList() {
-  const listEl = document.getElementById('admin-users-list');
-  listEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
-  const session = await window.sessionStore.get();
-  try {
-    const { users } = await adminAction('list_users', { adminToken: session.loginToken });
-    listEl.innerHTML = '';
-    listEl.appendChild(renderUsersHeader());
-    if (!users.length) {
-      const empty = document.createElement('p');
-      empty.className = 'empty-note';
-      empty.textContent = 'Пока никто не входил.';
-      listEl.appendChild(empty);
-      return;
-    }
-    for (const u of users) {
-      listEl.appendChild(renderUserRow(u, session.loginToken));
-    }
-  } catch (err) {
-    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
-  }
-}
-
-function renderUsersHeader() {
-  const header = document.createElement('div');
-  header.className = 'user-header-row';
-  header.innerHTML = `<div>Пользователь</div><div>Онлайн</div><div>Доверенный</div><div>Доступ</div><div></div>`;
-  return header;
-}
-
-// Онлайн — не отдельный статус на сервере, а просто "последний heartbeat
-// был не позже двух интервалов назад" (двух — а не одного, чтобы разовая
-// задержка сети не показывала человека офлайн, пока он ещё реально в сети).
-const ONLINE_THRESHOLD_MS = HEARTBEAT_INTERVAL_MS * 2;
-
-function formatOnlineStatus(lastHeartbeatAt) {
-  if (!lastHeartbeatAt) return { online: false, label: 'не в сети' };
-  const ms = Date.now() - new Date(lastHeartbeatAt).getTime();
-  if (ms < ONLINE_THRESHOLD_MS) return { online: true, label: 'в сети' };
-  return { online: false, label: `был(а) ${fmtDate(lastHeartbeatAt)} ${fmtOnlyTime(lastHeartbeatAt)}` };
-}
-
-function renderUserRow(u, adminToken) {
-  const row = document.createElement('div');
-  row.className = 'user-row';
-  const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || `id ${u.telegram_id}`;
-  const online = formatOnlineStatus(u.last_heartbeat_at);
-  row.innerHTML = `
-    <div class="col-name">${name}${u.username ? `<span class="username">@${u.username}</span>` : ''}</div>
-    <span class="online-indicator ${online.online ? 'online' : ''}"><span class="online-dot"></span>${online.label}</span>
-    <button class="trusted-toggle-btn ${u.trusted ? 'on' : ''}">Доверенный</button>
-    <button class="kick-toggle-btn ${u.blocked ? 'blocked' : ''}">${u.blocked ? 'Восстановить' : 'Кикнуть'}</button>
-    <button class="history-btn">История</button>
-  `;
-
-  row.querySelector('.history-btn').addEventListener('click', () => openLoginHistory(u, name, adminToken));
-
-  row.querySelector('.trusted-toggle-btn').addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    const next = !u.trusted;
-    try {
-      await adminAction('set_trusted', { adminToken, targetTelegramId: u.telegram_id, trusted: next });
-      u.trusted = next;
-      btn.classList.toggle('on', next);
-    } catch (err) {
-      console.error(err);
-    }
-  });
-
-  row.querySelector('.kick-toggle-btn').addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    const action = u.blocked ? 'unkick' : 'kick';
-    try {
-      await adminAction(action, { adminToken, targetTelegramId: u.telegram_id });
-      u.blocked = !u.blocked;
-      btn.classList.toggle('blocked', u.blocked);
-      btn.textContent = u.blocked ? 'Восстановить' : 'Кикнуть';
-    } catch (err) {
-      console.error(err);
-    }
-  });
-
-  return row;
-}
-
-// ------------------------------- Whitelist ------------------------------
-// Регистрация (вход через Telegram) возможна только для юзернеймов из этого
-// списка — проверяется на сервере в telegram-webhook, здесь только
-// управление самим списком.
-
-async function loadWhitelist() {
-  const listEl = document.getElementById('whitelist-list');
-  listEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
-  const session = await window.sessionStore.get();
-  try {
-    const { usernames } = await adminAction('list_whitelist', { adminToken: session.loginToken });
-    listEl.innerHTML = '';
-    if (!usernames.length) {
-      const empty = document.createElement('p');
-      empty.className = 'empty-note';
-      empty.textContent = 'Список пуст — пока никто не сможет зарегистрироваться.';
-      listEl.appendChild(empty);
-      return;
-    }
-    for (const u of usernames) {
-      listEl.appendChild(renderWhitelistRow(u.username, session.loginToken));
-    }
-  } catch (err) {
-    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
-  }
-}
-
-function renderWhitelistRow(username, adminToken) {
-  const row = document.createElement('div');
-  row.className = 'whitelist-row';
-  row.innerHTML = `<span>@${username}</span><button class="whitelist-remove-btn">Убрать</button>`;
-  row.querySelector('.whitelist-remove-btn').addEventListener('click', async () => {
-    try {
-      await adminAction('remove_whitelist_username', { adminToken, username });
-      loadWhitelist();
-    } catch (err) {
-      document.getElementById('whitelist-status').textContent = 'Ошибка: ' + err.message;
-    }
-  });
-  return row;
-}
-
-const whitelistInput = document.getElementById('whitelist-input');
-const whitelistStatus = document.getElementById('whitelist-status');
-
-async function addWhitelistUsername() {
-  const value = whitelistInput.value.trim();
-  if (!value) return;
-  whitelistStatus.textContent = '';
-  const session = await window.sessionStore.get();
-  try {
-    await adminAction('add_whitelist_username', { adminToken: session.loginToken, username: value });
-    whitelistInput.value = '';
-    loadWhitelist();
-  } catch (err) {
-    whitelistStatus.textContent = 'Ошибка: ' + err.message;
-  }
-}
-
-document.getElementById('whitelist-add-btn').addEventListener('click', addWhitelistUsername);
-whitelistInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') addWhitelistUsername();
-});
-
 // ------------------------- "Написать администратору" (Блок 7) -------------------------
 // Пользовательская сторона переписки. Поллинг идёт, только пока сам экран
 // переписки открыт — уведомлять пользователя о новом ответе, пока он занят
@@ -1600,122 +1185,6 @@ document.getElementById('support-open-btn').addEventListener('click', openSuppor
 document.getElementById('support-back-btn').addEventListener('click', closeSupportChat);
 document.getElementById('support-send-btn').addEventListener('click', sendSupportMessage);
 
-// ------------------------- Переписка — сторона администратора -------------------------
-
-let chatThreadsCache = [];
-let activeChatTelegramId = null;
-
-async function loadChatThreads() {
-  const listEl = document.getElementById('chat-threads-list');
-  listEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
-  const session = await window.sessionStore.get();
-  try {
-    const { threads } = await adminAction('list_support_threads', { adminToken: session.loginToken });
-    chatThreadsCache = threads;
-    if (!threads.length) {
-      listEl.innerHTML = '<p class="empty-note">Сообщений нет.</p>';
-      return;
-    }
-    listEl.innerHTML = '';
-    for (const t of threads) listEl.appendChild(renderChatThreadRow(t, session.loginToken));
-  } catch (err) {
-    listEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
-  }
-}
-
-function renderChatThreadRow(t, adminToken) {
-  const row = document.createElement('div');
-  row.className = `chat-thread-row ${t.telegram_id === activeChatTelegramId ? 'active' : ''}`;
-  const name = t.user
-    ? (t.user.username ? `@${t.user.username}` : [t.user.first_name, t.user.last_name].filter(Boolean).join(' ') || `id ${t.telegram_id}`)
-    : `id ${t.telegram_id}`;
-  row.innerHTML = `
-    <div class="chat-thread-name">${name}</div>
-    <div class="chat-thread-preview">${t.last_sender === 'admin' ? 'Вы: ' : ''}${t.last_text}</div>
-  `;
-  row.addEventListener('click', () => openChatConversation(t.telegram_id, name, adminToken));
-  return row;
-}
-
-async function openChatConversation(telegramId, name, adminToken) {
-  activeChatTelegramId = telegramId;
-  document.querySelectorAll('.chat-thread-row').forEach((el, i) => {
-    el.classList.toggle('active', chatThreadsCache[i]?.telegram_id === telegramId);
-  });
-  document.getElementById('chat-conversation-title').textContent = name;
-  const messagesEl = document.getElementById('chat-conversation-messages');
-  messagesEl.innerHTML = '<p class="empty-note">Загрузка...</p>';
-  const input = document.getElementById('chat-reply-input');
-  const sendBtn = document.getElementById('chat-reply-send-btn');
-  input.disabled = false;
-  sendBtn.disabled = false;
-
-  try {
-    const { messages } = await adminAction('list_support_messages', { adminToken, targetTelegramId: telegramId });
-    messagesEl.innerHTML = '';
-    for (const m of messages) {
-      const row = document.createElement('div');
-      row.className = `support-message ${m.sender_role === 'admin' ? 'from-admin' : 'from-user'}`;
-      const textEl = document.createElement('div');
-      textEl.className = 'support-message-text';
-      textEl.textContent = m.text;
-      const timeEl = document.createElement('div');
-      timeEl.className = 'support-message-time';
-      timeEl.textContent = `${fmtDate(m.created_at)} ${fmtOnlyTime(m.created_at)}`;
-      row.appendChild(textEl);
-      row.appendChild(timeEl);
-      messagesEl.appendChild(row);
-    }
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  } catch (err) {
-    messagesEl.innerHTML = `<p class="empty-note">Ошибка: ${err.message}</p>`;
-  }
-}
-
-// Синхронный флаг, выставляется до любого await — иначе Enter и клик,
-// сработавшие почти одновременно, оба проходят проверку раньше, чем
-// первый вызов успевает выставить её (см. тот же паттерн у
-// sendSupportMessage выше).
-let chatReplySending = false;
-
-async function sendChatReply() {
-  if (!activeChatTelegramId) return;
-  const input = document.getElementById('chat-reply-input');
-  const text = input.value.trim();
-  if (!text || chatReplySending) return;
-  chatReplySending = true;
-  const sendBtn = document.getElementById('chat-reply-send-btn');
-  sendBtn.disabled = true;
-  try {
-    const session = await window.sessionStore.get();
-    await adminAction('send_support_reply', { adminToken: session.loginToken, targetTelegramId: activeChatTelegramId, text });
-    input.value = '';
-    const name = document.getElementById('chat-conversation-title').textContent;
-    await openChatConversation(activeChatTelegramId, name, session.loginToken);
-    await loadChatThreads();
-  } catch (err) {
-    alert('Не удалось отправить: ' + err.message);
-  } finally {
-    chatReplySending = false;
-    sendBtn.disabled = false;
-  }
-}
-
-document.getElementById('chat-reply-send-btn').addEventListener('click', sendChatReply);
-document.getElementById('chat-reply-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') sendChatReply();
-});
-
-adminOpenBtn.addEventListener('click', openAdminPanel);
-document.getElementById('admin-back-btn').addEventListener('click', closeAdminPanel);
-document.getElementById('admin-tab-history').addEventListener('click', () => switchAdminTab('history'));
-document.getElementById('admin-tab-users').addEventListener('click', () => switchAdminTab('users'));
-document.getElementById('admin-tab-whitelist').addEventListener('click', () => switchAdminTab('whitelist'));
-document.getElementById('admin-tab-chat').addEventListener('click', () => switchAdminTab('chat'));
-document.getElementById('date-picker-btn').addEventListener('click', (e) => {
-  e.stopPropagation();
-  toggleCalendarPopover();
-});
 
 // ------------------------------------------------------------------------
 
