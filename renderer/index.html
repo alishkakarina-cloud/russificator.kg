@@ -17,11 +17,7 @@
     <h1>russificator.kg</h1>
     <p class="subtitle">Вход в систему</p>
 
-    <input id="login-nickname" type="text" class="text-input" placeholder="Никнейм" autocomplete="username" />
-    <input id="login-password" type="password" class="text-input" placeholder="Пароль" autocomplete="current-password" />
-    <button id="login-password-btn" class="primary-btn">Войти</button>
-    <p id="login-password-status" class="status"></p>
-    <button id="show-register-btn" class="secondary-btn">Зарегистрироваться</button>
+    <button id="telegram-login-btn" class="primary-btn">Войти через Telegram</button>
 
     <button id="update-available-btn" class="update-btn" hidden>
       <span id="update-btn-progress" class="update-btn-progress"></span>
@@ -31,38 +27,6 @@
       </span>
     </button>
     <p id="login-status" class="status"></p>
-  </main>
-
-  <main class="screen" id="screen-register" hidden>
-    <h1>russificator.kg</h1>
-    <p class="subtitle">Регистрация</p>
-
-    <div id="register-form">
-      <input id="register-username" type="text" class="text-input" placeholder="Telegram-юзернейм (без @)" />
-      <input id="register-nickname" type="text" class="text-input" placeholder="Никнейм" autocomplete="username" />
-      <input id="register-password" type="password" class="text-input" placeholder="Пароль" autocomplete="new-password" />
-      <button id="register-activate-btn" class="primary-btn">Активировать</button>
-    </div>
-
-    <div id="register-waiting" hidden>
-      <div class="spinner"></div>
-      <p class="subtitle" id="register-waiting-text">Откройте Telegram и нажмите Start, чтобы подтвердить...</p>
-    </div>
-
-    <p id="register-status" class="status"></p>
-    <button id="register-back-btn" class="secondary-btn">← Назад ко входу</button>
-  </main>
-
-  <main class="screen" id="screen-forced-update" hidden>
-    <h1>russificator.kg</h1>
-    <p class="subtitle">Установлена устаревшая версия программы — нужно обновиться, чтобы продолжить</p>
-    <button id="forced-update-btn" class="update-btn">
-      <span id="forced-update-btn-progress" class="update-btn-progress"></span>
-      <span class="update-btn-content">
-        <span class="update-btn-title">Обновить сейчас</span>
-        <span id="forced-update-btn-subtitle" class="update-btn-subtitle">Скачать</span>
-      </span>
-    </button>
   </main>
 
   <main class="screen" id="screen-waiting" hidden>
@@ -191,6 +155,23 @@
     </div>
   </main>
 
+  <!-- Принудительное обновление (min_version) — оверлей поверх ЛЮБОГО текущего
+       экрана, не отдельный screen. Специально без крестика/клика-мимо/Esc —
+       единственный выход это обновиться, см. renderer.js: checkForcedUpdate. -->
+  <div id="forced-update-overlay" class="modal-overlay forced-update-overlay" hidden>
+    <div class="modal-box forced-update-box">
+      <h1>russificator.kg</h1>
+      <p class="subtitle">Установлена устаревшая версия программы — нужно обновиться, чтобы продолжить</p>
+      <button id="forced-update-btn" class="update-btn">
+        <span id="forced-update-btn-progress" class="update-btn-progress"></span>
+        <span class="update-btn-content">
+          <span class="update-btn-title">Обновить сейчас</span>
+          <span id="forced-update-btn-subtitle" class="update-btn-subtitle">Скачать</span>
+        </span>
+      </button>
+    </div>
+  </div>
+
   <div id="session-detail-overlay" class="modal-overlay" hidden>
     <div class="modal-box">
       <div class="modal-header">
@@ -204,7 +185,6 @@
   <script src="config.js"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
-  <script src="vendor/addon-webgl.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

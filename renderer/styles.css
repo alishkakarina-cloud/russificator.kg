@@ -906,6 +906,19 @@ h1 {
   backdrop-filter: blur(14px);
 }
 
+/* Оверлей принудительного обновления — поверх ЛЮБОГО текущего экрана
+   (z-index выше обычных модалок), без крестика/клика-мимо. */
+.forced-update-overlay {
+  z-index: 100;
+}
+
+.forced-update-box {
+  width: 100%;
+  max-width: 340px;
+  padding: 32px;
+  text-align: center;
+}
+
 .modal-header {
   display: flex;
   align-items: center;

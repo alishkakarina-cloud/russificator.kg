@@ -12,8 +12,6 @@ const SESSION_MS = 20 * 60 * 1000;
 
 const screens = {
   login: document.getElementById('screen-login'),
-  register: document.getElementById('screen-register'),
-  forcedUpdate: document.getElementById('screen-forced-update'),
   waiting: document.getElementById('screen-waiting'),
   rejected: document.getElementById('screen-rejected'),
   downloading: document.getElementById('screen-downloading'),
@@ -249,137 +247,21 @@ function retryLogin() {
   showScreen('login');
 }
 
-// ------------------------- Вход по никнейму/паролю -------------------------
-// Обычный путь для всех, кроме админов (они по-прежнему жмут "Войти через
-// Telegram" ниже). Выданный login-account токен — обычный approved
-// loginToken, вся остальная логика приложения не отличает, как он получен.
-
-async function loginWithPassword() {
-  const nicknameEl = document.getElementById('login-nickname');
-  const passwordEl = document.getElementById('login-password');
-  const statusEl = document.getElementById('login-password-status');
-  const btn = document.getElementById('login-password-btn');
-
-  const nickname = nicknameEl.value.trim();
-  const password = passwordEl.value;
-  statusEl.textContent = '';
-  if (!nickname || !password) {
-    statusEl.textContent = 'Заполните никнейм и пароль';
-    return;
-  }
-
-  btn.disabled = true;
+// ------------------------------- Вход через Telegram -------------------------------
+// Единственный способ входа. Личность подтверждается ботом (тот же
+// whitelist, что и раньше), дальше — либо мгновенный auto-approve для
+// "доверенных" пользователей, либо заявка двум админам на решение.
+async function beginTelegramLogin() {
+  loginStatus.textContent = '';
   try {
-    const { token } = await callFunction('login-account', { nickname, password });
-    const row = await fetchTokenRow(token);
-    await enterMainScreen(row?.telegram_user?.id, token);
-  } catch (err) {
-    statusEl.textContent = err.message;
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-// ------------------------------ Регистрация ------------------------------
-// Юзернейм проверяется на сервере по whitelist (Блок 1) — сначала разовое
-// подтверждение личности через Telegram (без ручного одобрения админом),
-// затем сразу создаётся учётная запись и человек оказывается внутри,
-// минуя отдельный повторный вход.
-
-let registerPollTimer = null;
-
-function stopRegisterPolling() {
-  if (registerPollTimer) {
-    clearInterval(registerPollTimer);
-    registerPollTimer = null;
-  }
-}
-
-function showRegisterScreen() {
-  document.getElementById('register-form').hidden = false;
-  document.getElementById('register-waiting').hidden = true;
-  document.getElementById('register-status').textContent = '';
-  document.getElementById('register-username').value = '';
-  document.getElementById('register-nickname').value = '';
-  document.getElementById('register-password').value = '';
-  showScreen('register');
-}
-
-function backFromRegister() {
-  stopRegisterPolling();
-  showScreen('login');
-}
-
-async function startRegistration() {
-  const usernameEl = document.getElementById('register-username');
-  const nicknameEl = document.getElementById('register-nickname');
-  const passwordEl = document.getElementById('register-password');
-  const statusEl = document.getElementById('register-status');
-  const formEl = document.getElementById('register-form');
-  const waitingEl = document.getElementById('register-waiting');
-  const waitingTextEl = document.getElementById('register-waiting-text');
-
-  const username = usernameEl.value.trim().replace(/^@/, '');
-  const nickname = nicknameEl.value.trim();
-  const password = passwordEl.value;
-
-  statusEl.textContent = '';
-  if (!username) {
-    statusEl.textContent = 'Введите Telegram-юзернейм';
-    return;
-  }
-  if (nickname.length < 3) {
-    statusEl.textContent = 'Никнейм — не короче 3 символов';
-    return;
-  }
-  if (password.length < 6) {
-    statusEl.textContent = 'Пароль — не короче 6 символов';
-    return;
-  }
-
-  const activateBtn = document.getElementById('register-activate-btn');
-  activateBtn.disabled = true;
-  try {
-    const token = await startTelegramLoginToken('register');
+    const token = await startTelegramLoginToken();
+    localStorage.setItem(STORAGE_KEY, token);
     await window.app.openExternal(`https://t.me/${BOT_USERNAME}?start=${token}`);
-    formEl.hidden = true;
-    waitingEl.hidden = false;
-    waitingTextEl.textContent = 'Откройте Telegram и нажмите Start, чтобы подтвердить...';
-
-    stopRegisterPolling();
-    registerPollTimer = setInterval(async () => {
-      let row;
-      try {
-        row = await fetchTokenRow(token);
-      } catch (err) {
-        return; // сетевой сбой при опросе — пробуем на следующем тике, не прерываем
-      }
-      if (!row) return;
-
-      if (row.status === 'registration_confirmed') {
-        stopRegisterPolling();
-        waitingTextEl.textContent = 'Подтверждено — создаём учётную запись...';
-        try {
-          const { token: newToken } = await callFunction('register-account', { loginToken: token, nickname, password });
-          await enterMainScreen(row.telegram_user?.id, newToken);
-        } catch (err) {
-          formEl.hidden = false;
-          waitingEl.hidden = true;
-          statusEl.textContent = err.message;
-        }
-      } else if (row.status === 'rejected') {
-        stopRegisterPolling();
-        formEl.hidden = false;
-        waitingEl.hidden = true;
-        statusEl.textContent = 'Отказано: юзернейм не в списке разрешённых или доступ заблокирован.';
-      }
-    }, POLL_INTERVAL_MS);
+    showScreen('waiting');
+    applyStatus({ status: 'pending_telegram' });
+    startPolling(token);
   } catch (err) {
-    statusEl.textContent = 'Ошибка: ' + err.message;
-    formEl.hidden = false;
-    waitingEl.hidden = true;
-  } finally {
-    activateBtn.disabled = false;
+    loginStatus.textContent = 'Ошибка входа: ' + err.message;
   }
 }
 
@@ -508,25 +390,6 @@ window.automaxkg.onTerminalExit(({ exitCode }) => {
   if (term) term.write(`\r\n\r\n[Процесс AUTOMAX KG завершён, код выхода ${exitCode}]\r\n`);
 });
 
-// AUTOMAX KG может печатать много вывода (лог прошивки), а обычный
-// DOM-рендер xterm.js перерисовывает каждую строку через реальные элементы
-// DOM — при активном выводе это заметно тормозит. WebGL-рендер рисует текст
-// на GPU и ощутимо быстрее, но доступен не на всех машинах (старые видеокарты,
-// драйверы, виртуалки). Если WebGL недоступен или контекст потерян прямо во
-// время работы — тихо откатываемся на обычный DOM-рендер, не роняя терминал:
-// это чисто способ отрисовки, на передачу данных в/из AUTOMAX KG не влияет.
-function enableWebglRendererIfPossible(terminal) {
-  try {
-    const webglAddon = new WebglAddon.WebglAddon();
-    webglAddon.onContextLoss(() => {
-      webglAddon.dispose();
-    });
-    terminal.loadAddon(webglAddon);
-  } catch (err) {
-    console.error('WebGL-рендер терминала недоступен, используется обычный', err);
-  }
-}
-
 function handleTerminalResize() {
   if (!term || !fitAddon) return;
   fitAddon.fit();
@@ -549,7 +412,6 @@ async function enterTerminalScreen(carSess, loginToken) {
   term.loadAddon(fitAddon);
   term.open(terminalContainer);
   fitAddon.fit();
-  enableWebglRendererIfPossible(term);
   // Каждое нажатие клавиши уходит процессу как есть — это просто
   // "окно-зеркало" на управляемый процесс, без разбора смысла ввода/вывода.
   term.onData((data) => window.automaxkg.sendInput(data));
@@ -1013,19 +875,9 @@ finishBtn.addEventListener('click', finishSession);
 terminalFinishBtn.addEventListener('click', finishSession);
 document.getElementById('logout-btn').addEventListener('click', logout);
 
+document.getElementById('telegram-login-btn').addEventListener('click', beginTelegramLogin);
 document.getElementById('cancel-login-btn').addEventListener('click', cancelLogin);
 document.getElementById('retry-login-btn').addEventListener('click', retryLogin);
-
-document.getElementById('login-password-btn').addEventListener('click', loginWithPassword);
-document.getElementById('login-password').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') loginWithPassword();
-});
-document.getElementById('show-register-btn').addEventListener('click', showRegisterScreen);
-document.getElementById('register-activate-btn').addEventListener('click', startRegistration);
-document.getElementById('register-back-btn').addEventListener('click', backFromRegister);
-document.getElementById('register-password').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') startRegistration();
-});
 
 // ------------------------- Обновление: кнопка на входе + принудительный экран -------------------------
 // electron-updater только проверяет наличие обновления сам при старте
@@ -1130,7 +982,12 @@ async function checkForcedUpdate() {
     if (!minVersion) return false;
 
     if (compareVersions(currentVersion, minVersion) < 0) {
-      showScreen('forcedUpdate');
+      // Оверлей, а не отдельный экран — показывается поверх того, что уже
+      // на экране (обычно screen-login, он не hidden по умолчанию в HTML),
+      // блокируя доступ к нему, но не заменяя. Нет ни крестика, ни закрытия
+      // по клику мимо/Esc — они здесь просто не реализованы, единственный
+      // выход physически в разметке — кнопка "Обновить сейчас".
+      document.getElementById('forced-update-overlay').hidden = false;
       return true;
     }
   } catch (err) {
