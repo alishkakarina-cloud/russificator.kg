@@ -31,6 +31,17 @@ Deno.serve(async (req) => {
     return json({ error: 'Сессия входа недействительна' }, 401);
   }
 
+  // approved-токен не истекает сам по себе, а кик (blocked_telegram_users)
+  // раньше проверялся только в клиенте и при новом /start в боте — сам
+  // heartbeat никак не блокировался. Теперь кик проверяется на той же
+  // границе, что и остальная авторизация.
+  const { data: blocked } = await supabase
+    .from('blocked_telegram_users')
+    .select('telegram_id')
+    .eq('telegram_id', data.telegram_user.id)
+    .maybeSingle();
+  if (blocked) return json({ error: 'Сессия входа недействительна' }, 401);
+
   await supabase
     .from('telegram_users')
     .update({ last_heartbeat_at: new Date().toISOString() })

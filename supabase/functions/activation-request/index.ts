@@ -38,7 +38,19 @@ async function resolveTelegramUser(loginToken: string) {
     .eq('token', loginToken)
     .maybeSingle();
   if (!data || data.status !== 'approved' || !data.telegram_user) return null;
-  return data.telegram_user as { id: number; first_name: string; last_name: string | null; username: string | null };
+  const user = data.telegram_user as { id: number; first_name: string; last_name: string | null; username: string | null };
+  // approved-токен не истекает сам по себе, а кик (blocked_telegram_users)
+  // раньше проверялся только в клиенте и при новом /start в боте — сам
+  // запрос сюда с уже выданным токеном никак не блокировался. Теперь кик
+  // проверяется на той же границе, что и остальная авторизация: кикнутый
+  // получает тот же 401, что и при невалидной сессии.
+  const { data: blocked } = await supabase
+    .from('blocked_telegram_users')
+    .select('telegram_id')
+    .eq('telegram_id', user.id)
+    .maybeSingle();
+  if (blocked) return null;
+  return user;
 }
 
 // Тот же принцип, что в admin-action/telegram-webhook/support-message —
@@ -107,11 +119,24 @@ Deno.serve(async (req) => {
     return json({ request: data });
   }
 
-  // Статус заявки клиент опрашивает НЕ через эту функцию, а напрямую через
-  // anon-ключ (тот же паттерн, что и telegram_login_tokens для входа) — см.
-  // "anon can read own request by id" в schema.sql. id заявки — случайный
-  // UUID, узнать его можно только получив в ответ на 'create', перечисления
-  // не существует.
+  // Статус заявки клиент опрашивает через эту же функцию (а не напрямую
+  // anon-ключом, как было раньше) — anon-политика "using (true)" на
+  // activation_requests на деле разрешала ЛИСТИНГ всей таблицы (RLS
+  // проверяет строку, не фильтр запроса), а не point-lookup по id, как
+  // задумывалось. Здесь identity уже подтверждена по loginToken выше, плюс
+  // явная проверка telegram_id — так нельзя даже случайно опросить чужую
+  // заявку, зная только её id.
+  if (body.action === 'status') {
+    if (!body.requestId) return json({ error: 'requestId обязателен' }, 400);
+    const { data, error } = await supabase
+      .from('activation_requests')
+      .select('status')
+      .eq('id', body.requestId)
+      .eq('telegram_id', user.id)
+      .maybeSingle();
+    if (error) return json({ error: error.message }, 500);
+    return json({ status: data ? data.status : null });
+  }
 
   if (body.action === 'cancel') {
     if (!body.requestId) return json({ error: 'requestId обязателен' }, 400);

@@ -100,19 +100,21 @@ async function startTelegramLoginToken(purpose = 'login') {
   return token;
 }
 
+// Раньше это были прямые GET к telegram_login_tokens/blocked_telegram_users
+// анонимным ключом — казалось безопасным (фильтр по своему токену/id), но
+// RLS-политика "using (true)" на деле разрешала прочитать ЛЮБУЮ строку,
+// то есть и весь список токенов/заблокированных без фильтра тоже. Теперь
+// точечное чтение делает service_role внутри Edge Function login-status —
+// см. комментарии в schema.sql и supabase/functions/login-status.
 async function fetchTokenRow(token) {
-  const rows = await supabaseRequest(
-    `telegram_login_tokens?token=eq.${encodeURIComponent(token)}&select=status,telegram_user`
-  );
-  return rows && rows.length ? rows[0] : null;
+  const { row } = await callFunction('login-status', { action: 'token_status', token });
+  return row;
 }
 
-async function isBlocked(telegramId) {
-  if (!telegramId) return false;
-  const rows = await supabaseRequest(
-    `blocked_telegram_users?telegram_id=eq.${telegramId}&select=telegram_id`
-  );
-  return Boolean(rows && rows.length);
+async function isBlocked(loginToken) {
+  if (!loginToken) return false;
+  const { blocked } = await callFunction('login-status', { action: 'blocked', loginToken });
+  return Boolean(blocked);
 }
 
 function stopPolling() {
@@ -172,6 +174,7 @@ async function ensureAutomaxKgReady(loginToken) {
 
 downloadRetryBtn.addEventListener('click', async () => {
   if (await ensureAutomaxKgReady(pendingLoginToken)) {
+    if (await checkForcedUpdate()) return;
     showScreen('main');
     await initMainScreen();
   }
@@ -202,6 +205,7 @@ async function enterMainScreen(telegramId, loginToken) {
     }
   }
   if (!(await ensureAutomaxKgReady(loginToken))) return;
+  if (await checkForcedUpdate()) return;
   showScreen('main');
   await initMainScreen();
 }
@@ -298,7 +302,7 @@ async function tryLocalSession() {
   // на один сетевой круг быстрее при каждом старте/резюме приложения.
   const [trusted, blocked] = await Promise.all([
     isTrustedUser(session.loginToken),
-    isBlocked(session.telegramId).catch((err) => {
+    isBlocked(session.loginToken).catch((err) => {
       console.error('Проверка блокировки не удалась, продолжаем офлайн', err);
       return false;
     }),
@@ -327,6 +331,7 @@ async function tryLocalSession() {
   // строго от момента входа, не сбрасываясь ни от чего, включая повторное
   // открытие приложения в рамках этих 20 минут.
   if (await ensureAutomaxKgReady(session.loginToken)) {
+    if (await checkForcedUpdate()) return true;
     showScreen('main');
     await initMainScreen();
   }
@@ -585,7 +590,7 @@ async function kickPollTick() {
   }
   let blocked = false;
   try {
-    blocked = await isBlocked(session.telegramId);
+    blocked = await isBlocked(session.loginToken);
   } catch (err) {
     console.error('Не удалось проверить статус блокировки (кик)', err);
     return;
@@ -629,11 +634,18 @@ async function forceKickSession(session) {
   }
 }
 
+// Кэш хранит именно ПРОМИС, а не готовый массив — иначе прогрев из
+// initMainScreen (см. ниже) и клик по "Начать работу" ДО того, как прогрев
+// успел завершиться, запустили бы два одинаковых запроса вместо одного.
 let carModelsCache = null;
 
-async function loadCarModels() {
-  if (carModelsCache) return carModelsCache;
-  carModelsCache = await supabaseRequest('car_models?select=*&order=sort_order.asc');
+function loadCarModels() {
+  if (!carModelsCache) {
+    carModelsCache = supabaseRequest('car_models?select=*&order=sort_order.asc').catch((err) => {
+      carModelsCache = null; // сеть подвела — не залипаем на неудачном промисе, следующий вызов попробует снова
+      throw err;
+    });
+  }
   return carModelsCache;
 }
 
@@ -728,19 +740,23 @@ async function enterActivationWaitingScreen(request, loginToken, model) {
       stopActivationPoll();
       return;
     }
-    let rows;
+    // Раньше — прямой GET к activation_requests анонимным ключом
+    // (см. коммент в schema.sql, почему это была дыра). Теперь опрашиваем
+    // через саму activation-request — она уже подтверждает identity по
+    // loginToken и владение заявкой.
+    let statusResult;
     try {
-      rows = await supabaseRequest(`activation_requests?id=eq.${activeActivationRequestId}&select=status`);
+      statusResult = await activationRequest('status', { loginToken, requestId: activeActivationRequestId });
     } catch (err) {
       return; // сетевой сбой при опросе — пробуем на следующем тике, не прерываем
     }
-    const row = rows && rows[0];
-    if (!row) return;
+    const requestStatus = statusResult && statusResult.status;
+    if (!requestStatus) return;
 
-    if (row.status === 'confirmed') {
+    if (requestStatus === 'confirmed') {
       stopActivationPoll();
       await proceedAfterActivationConfirmed(model, loginToken);
-    } else if (row.status === 'rejected') {
+    } else if (requestStatus === 'rejected') {
       stopActivationPoll();
       activeActivationRequestId = null;
       selectedCarModel = null;
@@ -856,39 +872,52 @@ async function finishSession() {
 }
 
 async function initMainScreen() {
-  // Кнопка "Админ панель" видна всем — доступ к содержимому проверяет сервер
-  // (admin-action) по фактическим правам, независимо от того, кто её видит.
+  // Прогрев списка машин ДО того, как пользователь откроет "Начать работу" —
+  // раньше этот запрос уходил только по клику на выпадающий список, и
+  // список визуально "подвисал" на время сетевого круга при первом открытии
+  // за сессию. Не await — не должно задерживать остальной initMainScreen,
+  // просто заранее наполняет carModelsCache, пока пользователь смотрит на
+  // только что открывшийся главный экран.
+  loadCarModels().catch((err) => console.error('Не удалось заранее загрузить список машин', err));
+
   const session = await window.sessionStore.get();
   activeCarSession = null;
   selectedCarModel = null;
   carDropdownBtn.textContent = 'Начать работу';
   if (session) {
-    try {
-      const { session: stale } = await carSession('get_active', { loginToken: session.loginToken });
-      // initMainScreen вызывается только при входе/резюме или после закрытия
-      // админ-панели — то есть никогда в момент, когда встроенный терминал
-      // реально открыт в этом же запуске приложения (выбор марки сразу
-      // переключает на screen-terminal, а не сюда). Значит любая найденная
-      // здесь незавершённая car_session — гарантированно "хвост" от
-      // предыдущего запуска (например окно закрыли, не нажав "Завершено"),
-      // а не то, что пользователь выбрал сейчас. Раньше это ошибочно
-      // показывалось как "уже идёт работа с X Y", из-за чего экран выбора
-      // марки пропускался — выглядело как автовыбор марки при входе.
-      // Экран выбора должен показываться всегда — тихо закрываем такой хвост
-      // сами, не заставляя пользователя вручную жать "Завершено" за сессию,
-      // которую он мог даже не видеть.
-      if (stale) {
-        await carSession('finish', {
-          loginToken: session.loginToken,
-          sessionId: stale.id,
-          detail: { auto: true, reason: 'stale_on_resume' },
-        }).catch((e) => console.error('Не удалось автоматически закрыть зависшую сессию', e));
-      }
-    } catch (err) {
-      console.error('Не удалось проверить активную сессию', err);
+    // get_active и isTrustedUser независимы (ни один не использует
+    // результат другого) — запускаем параллельно вместо друг за другом,
+    // тот же приём, что и в tryLocalSession (см. комментарий там). Экономит
+    // один сетевой круг на каждый вход в главный экран.
+    const [activeResult, trusted] = await Promise.all([
+      carSession('get_active', { loginToken: session.loginToken }).catch((err) => {
+        console.error('Не удалось проверить активную сессию', err);
+        return { session: null };
+      }),
+      isTrustedUser(session.loginToken),
+    ]);
+    const stale = activeResult && activeResult.session;
+    // initMainScreen вызывается только при входе/резюме или после закрытия
+    // админ-панели — то есть никогда в момент, когда встроенный терминал
+    // реально открыт в этом же запуске приложения (выбор марки сразу
+    // переключает на screen-terminal, а не сюда). Значит любая найденная
+    // здесь незавершённая car_session — гарантированно "хвост" от
+    // предыдущего запуска (например окно закрыли, не нажав "Завершено"),
+    // а не то, что пользователь выбрал сейчас. Раньше это ошибочно
+    // показывалось как "уже идёт работа с X Y", из-за чего экран выбора
+    // марки пропускался — выглядело как автовыбор марки при входе.
+    // Экран выбора должен показываться всегда — тихо закрываем такой хвост
+    // сами, не заставляя пользователя вручную жать "Завершено" за сессию,
+    // которую он мог даже не видеть.
+    if (stale) {
+      await carSession('finish', {
+        loginToken: session.loginToken,
+        sessionId: stale.id,
+        detail: { auto: true, reason: 'stale_on_resume' },
+      }).catch((e) => console.error('Не удалось автоматически закрыть зависшую сессию', e));
     }
 
-    startSessionTimer(await isTrustedUser(session.loginToken));
+    startSessionTimer(trusted);
     startHeartbeat(session.loginToken);
     startKickPoll();
   } else {
@@ -1057,7 +1086,27 @@ function compareVersions(a, b) {
   return 0;
 }
 
+// Проверяется при каждом входе на главный экран (см. 3 места вызова ниже по
+// файлу), поэтому на холодном старте она неизбежно вызывается дважды подряд
+// (один раз тут же при загрузке страницы, второй раз изнутри tryLocalSession
+// при резюме локальной сессии) — без кэша это два одинаковых сетевых запроса
+// к Supabase почти одновременно. Короткий TTL (3с) схлопывает такие
+// одновременные вызовы в один реальный запрос, не мешая при этом основной
+// цели проверки — заметить min_version, поднятый, пока приложение уже
+// открыто (между входами в главный экран проходят минуты/часы, не секунды).
+const FORCED_UPDATE_CACHE_MS = 3000;
+let forcedUpdateCache = null; // { promise, at }
+
 async function checkForcedUpdate() {
+  if (forcedUpdateCache && Date.now() - forcedUpdateCache.at < FORCED_UPDATE_CACHE_MS) {
+    return forcedUpdateCache.promise;
+  }
+  const promise = checkForcedUpdateUncached();
+  forcedUpdateCache = { promise, at: Date.now() };
+  return promise;
+}
+
+async function checkForcedUpdateUncached() {
   try {
     const [rows, currentVersion] = await Promise.all([
       supabaseRequest('app_settings?key=eq.min_version&select=value'),
@@ -1071,7 +1120,7 @@ async function checkForcedUpdate() {
       // на экране (обычно screen-login, он не hidden по умолчанию в HTML),
       // блокируя доступ к нему, но не заменяя. Нет ни крестика, ни закрытия
       // по клику мимо/Esc — они здесь просто не реализованы, единственный
-      // выход physически в разметке — кнопка "Обновить сейчас".
+      // выход физически в разметке — кнопка "Установить обновление".
       document.getElementById('forced-update-overlay').hidden = false;
       return true;
     }

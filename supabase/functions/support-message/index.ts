@@ -53,6 +53,17 @@ async function resolveTelegramId(loginToken: string): Promise<{ id: number; user
     .eq('token', loginToken)
     .maybeSingle();
   if (!data || data.status !== 'approved' || !data.telegram_user) return null;
+  // approved-токен не истекает сам по себе, а кик (blocked_telegram_users)
+  // раньше проверялся только в клиенте и при новом /start в боте — сам
+  // запрос сюда с уже выданным токеном никак не блокировался. Теперь кик
+  // проверяется на той же границе, что и остальная авторизация: кикнутый
+  // получает тот же 401, что и при невалидной сессии.
+  const { data: blocked } = await supabase
+    .from('blocked_telegram_users')
+    .select('telegram_id')
+    .eq('telegram_id', data.telegram_user.id)
+    .maybeSingle();
+  if (blocked) return null;
   return { id: data.telegram_user.id, username: data.telegram_user.username ?? null };
 }
 

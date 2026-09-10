@@ -16,14 +16,17 @@ create table if not exists public.telegram_login_tokens (
 
 alter table public.telegram_login_tokens enable row level security;
 
--- Приложение (anon-ключ) только читает статус своего токена для поллинга.
--- Создаёт токен и меняет статус только Edge Function через service_role
--- (он не проверяется RLS) — anon не может ни завести токен сам, ни
--- одобрить себе вход.
-create policy "anon can read token status"
-  on public.telegram_login_tokens for select
-  to anon
-  using (true);
+-- НИКАКИХ anon-политик на select. Раньше была политика "using (true)" в
+-- расчёте на то, что клиент сам фильтрует запрос по своему токену — но RLS
+-- действует на уровне СТРОКИ, а не запроса: такая политика на деле разрешает
+-- прочитать ВСЮ таблицу целиком (листинг без фильтра тоже проходит), включая
+-- чужие approved-токены и telegram_user (имя/username/id). Кто угодно с
+-- публичным anon-ключом мог выкачать чужие токены и угнать чужую сессию —
+-- нашли и закрыли эту дыру. Статус токена теперь читает только Edge Function
+-- login-status (service_role, point-lookup по присланному в теле токену) —
+-- см. renderer.js fetchTokenRow. Создаёт токен и меняет статус тоже только
+-- через service_role — anon не может ни завести токен сам, ни одобрить
+-- себе вход.
 
 -- Кик через бота (/kick, /unkick — см. telegram-webhook). Приложение читает
 -- эту таблицу при запуске и при продлении локальной сессии, чтобы кик
@@ -36,10 +39,18 @@ create table if not exists public.blocked_telegram_users (
 
 alter table public.blocked_telegram_users enable row level security;
 
-create policy "anon can read blocklist"
-  on public.blocked_telegram_users for select
-  to anon
-  using (true);
+-- НИКАКИХ anon-политик на select — тот же паттерн-ошибка, что и у
+-- telegram_login_tokens выше ("using (true)" = листинг всей таблицы, а не
+-- point-lookup). Кик теперь проверяет: (1) Edge Function login-status,
+-- action 'blocked' — клиент дёргает её при старте/продлении локальной
+-- сессии (см. renderer.js isBlocked), и (2) КАЖДАЯ ресурсная Edge Function
+-- (car-session, activation-request, heartbeat, record-login,
+-- support-message, automaxkg-manifest) — внутри resolveTelegramUser/
+-- resolveTelegramId, той же проверкой, что и approved-статус токена. Раньше
+-- эта вторая часть отсутствовала полностью: кикнутый пользователь с уже
+-- выданным approved-токеном сохранял полный доступ ко всем этим функциям
+-- бесконечно, несмотря на кик — клиентская проверка ничего не гарантирует,
+-- её можно пропатчить или просто дёрнуть функцию напрямую.
 
 -- Все, кто хоть раз проходил через /start бота — заполняется вебхуком при
 -- каждом входе (upsert). trusted — доверенные пользователи (см. ниже).
@@ -173,9 +184,12 @@ on conflict do nothing;
 -- сознательно не объединяем, чтобы не путать вход в приложение и заявку на
 -- работу с конкретной машиной. Создаёт/меняет только activation-request
 -- (service_role) и telegram-webhook (callback activate_confirm/activate_reject).
--- anon может только читать конкретную заявку по её id (случайный UUID,
--- узнать который можно только получив в ответ на создание) — тот же принцип,
--- что и у telegram_login_tokens, для опроса статуса с клиента.
+-- НИКАКИХ anon-политик. Раньше была "using (true)" в расчёте на
+-- point-lookup по неугадываемому id заявки — тот же паттерн-ошибка, что и у
+-- telegram_login_tokens (RLS проверяет строку, не фильтр запроса, так что
+-- это был листинг ВСЕХ заявок всех пользователей). Статус заявки клиент
+-- теперь опрашивает через саму activation-request (action 'status',
+-- loginToken + requestId, с проверкой telegram_id — см. renderer.js).
 create table if not exists public.activation_requests (
   id uuid primary key default gen_random_uuid(),
   telegram_id bigint not null,
@@ -190,8 +204,3 @@ create table if not exists public.activation_requests (
 );
 
 alter table public.activation_requests enable row level security;
-
-create policy "anon can read activation requests"
-  on public.activation_requests for select
-  to anon
-  using (true);

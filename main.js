@@ -495,6 +495,23 @@ ipcMain.handle('automaxkg-terminal-start', async (event, { cols, rows }) => {
     // аргументов, иначе node-pty заново заэкранирует уже готовые кавычки).
     // Проверено вручную на реальном файле AUTOMAX KG — без этого запуск
     // падает с "не является внутренней или внешней командой".
+    //
+    // ПОПЫТКА №2 (версия 1.6.35, ОТКАЧЕНА): здесь стоял toShortPath(),
+    // переводивший AUTOMAXKG_DIR в 8.3-короткий (чисто ASCII) путь через
+    // `cmd.exe /c for %I in (...) do @echo %~sI` — гипотеза была, что не-ASCII
+    // имя пользователя Windows ломает путь при передаче в node-pty одной
+    // строкой (см. абзац выше). На практике это сломало ЗАПУСК на реальном
+    // устройстве в тот же день: node-pty упал с "Cannot create process,
+    // error code: 267" (ERROR_DIRECTORY) — то есть toShortPath() вернул
+    // НЕВЕРНЫЙ путь. Причина — execFileSync декодировал вывод cmd.exe как
+    // UTF-8 (`out.toString()`), а cmd.exe при перенаправлении вывода в пайп
+    // пишет в OEM-кодировке консоли, не в UTF-8 — не-ASCII байты в результате
+    // побились, и битый "короткий" путь ушёл в pty.spawn вместо настоящего.
+    // Другими словами — фикс от одной кодировочной проблемы сам стал
+    // источником другой. Откачено до простого прямого пути (работал для
+    // всех, кроме исходного отдельного случая, который толком не подтверждён
+    // как связанный именно с этим) — чинить дальше только на реальном
+    // устройстве с воспроизводимой проблемой, не вслепую.
     activePty = pty.spawn('cmd.exe', `/d /s /c ""${AUTOMAXKG_BAT_PATH}""`, {
       name: 'xterm-256color',
       cols: cols > 0 ? cols : 80,
@@ -569,17 +586,37 @@ ipcMain.handle('automaxkg-cleanup-result', () => orphanedCleanupResult);
 // комментарий про secureWipeFile/restrictAccessToCurrentUser выше.
 ipcMain.handle('automaxkg-download', async (event, { files }) => {
   // Защита от осиротевшего adb.exe с предыдущего запуска программы (см.
-  // killOrphanedAdbProcesses) — без этого secureWipeDir(AUTOMAXKG_STAGING_DIR)
-  // ниже мог бы упасть на заблокированном файле ещё до начала докачки.
+  // killOrphanedAdbProcesses) — без этого запись файлов ниже могла бы упасть
+  // на заблокированном файле ещё до начала докачки.
   killOrphanedAdbProcesses();
-  await secureWipeDir(AUTOMAXKG_STAGING_DIR);
   fs.mkdirSync(AUTOMAXKG_STAGING_DIR, { recursive: true });
   const total = files.length;
   let done = 0;
 
+  // ВОЗОБНОВЛЯЕМАЯ докачка: раньше кнопка "Повторить" после любого сбоя
+  // (нестабильный интернет — обычное дело) стирала STAGING_DIR целиком и
+  // начинала все ~3ГБ заново с первого файла, даже если 99% уже успешно
+  // скачалось. При таком объёме на файл ретраи "с нуля" — прямой и
+  // ощутимый перерасход egress-трафика Supabase (именно то, что привело к
+  // блокировке проекта). Теперь если файл уже лежит в staging с ТОЧНО
+  // ожидаемым размером — считаем его готовым и просто пропускаем, не качая
+  // повторно. Размер — из automaxkg-manifest (подписан сервером), подделать
+  // с клиента нельзя, так что ложно "готовым" файл считаться не может.
   for (const f of files) {
     const destPath = path.join(AUTOMAXKG_STAGING_DIR, ...f.path.split('/'));
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
+
+    if (typeof f.size === 'number' && f.size > 0 && fs.existsSync(destPath)) {
+      try {
+        if (fs.statSync(destPath).size === f.size) {
+          done++;
+          event.sender.send('automaxkg-download-progress', { done, total });
+          continue;
+        }
+      } catch {}
+      // Есть, но размер не совпадает (обрыв на середине в прошлый раз) —
+      // это будет перекачано ниже как обычно, не как "готовый" файл.
+    }
 
     let lastErr = null;
     let ok = false;
