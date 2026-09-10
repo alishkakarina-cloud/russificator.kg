@@ -23,17 +23,6 @@ function showScreen(name) {
   for (const key of Object.keys(screens)) screens[key].hidden = key !== name;
 }
 
-async function supabaseRequest(path) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-    },
-  });
-  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
-  return res.json();
-}
-
 async function callFunction(name, body) {
   const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
     method: 'POST',
@@ -62,11 +51,16 @@ function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
+// Раньше — прямой GET к telegram_login_tokens анонимным ключом. RLS-дыра
+// "using (true)" давно закрыта (см. schema.sql) полным запретом anon-select
+// на этой таблице — с тех пор такой запрос всегда возвращает пустой список,
+// то есть вход в веб-админку был сломан для любого нового входа (только уже
+// сохранённый в localStorage токен продолжал работать). Десктопное
+// приложение уже переведено на login-status (см. renderer.js fetchTokenRow),
+// админка — нет; теперь то же самое здесь.
 async function fetchTokenRow(token) {
-  const rows = await supabaseRequest(
-    `telegram_login_tokens?token=eq.${encodeURIComponent(token)}&select=status,telegram_user`
-  );
-  return rows && rows.length ? rows[0] : null;
+  const { row } = await callFunction('login-status', { action: 'token_status', token });
+  return row;
 }
 
 // ------------------------------- Вход -------------------------------
