@@ -56,9 +56,18 @@ const AUTOMAXKG_BAT_PATH = path.join(AUTOMAXKG_DIR, '@AUTOMAXKG) .bat');
 // каждого проверена (см. automaxkg-download ниже), переносится в
 // AUTOMAXKG_DIR одним переименованием.
 const AUTOMAXKG_STAGING_DIR = path.join(app.getPath('userData'), 'runtime-data-staging');
+// Записывается ПОСЛЕДНИМ шагом automaxkg-download, уже после переноса в
+// AUTOMAXKG_DIR и выставления атрибутов/прав — не при наличии одного .bat
+// файла. Раньше isAutomaxKgPresent() проверял только .bat: если скачивание
+// когда-либо прервалось ПОСЛЕ переноса staging→AUTOMAXKG_DIR, но ДО того как
+// все проверки/атрибуты отработали (обрыв процесса, антивирус, что угодно
+// на диске пользователя), .bat физически уже лежал на месте — программа
+// считала установку рабочей и никогда больше не пыталась перекачать её,
+// даже если часть файлов рядом реально отсутствовала или была повреждена.
+const AUTOMAXKG_COMPLETE_MARKER = path.join(AUTOMAXKG_DIR, '.download-complete');
 
 function isAutomaxKgPresent() {
-  return fs.existsSync(AUTOMAXKG_BAT_PATH);
+  return fs.existsSync(AUTOMAXKG_BAT_PATH) && fs.existsSync(AUTOMAXKG_COMPLETE_MARKER);
 }
 
 // Если один воркер бросает исключение, Promise.all реджектится немедленно,
@@ -589,6 +598,24 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
   // killOrphanedAdbProcesses) — без этого запись файлов ниже могла бы упасть
   // на заблокированном файле ещё до начала докачки.
   killOrphanedAdbProcesses();
+
+  // Миграция старых установок без AUTOMAXKG_COMPLETE_MARKER (см. выше):
+  // если .bat уже лежит на месте, но маркера нет (например, обновление с
+  // версии, где его ещё не было, либо обрыв на последнем шаге в прошлый
+  // раз) — не перекачивать все ~3ГБ заново вслепую. Переносим то, что уже
+  // есть, в STAGING_DIR, и дальше отрабатывает обычная поблочная проверка
+  // размера по манифесту ниже: совпавшие по размеру файлы будут пропущены,
+  // а реально отсутствующие/повреждённые — докачаны. Если перенос по любой
+  // причине не удался (файл заблокирован антивирусом и т.п.) — не страшно,
+  // просто останется пустой staging и всё скачается с нуля как раньше.
+  if (!fs.existsSync(AUTOMAXKG_STAGING_DIR) && fs.existsSync(AUTOMAXKG_DIR)) {
+    try {
+      await renameWithRetry(AUTOMAXKG_DIR, AUTOMAXKG_STAGING_DIR);
+    } catch (err) {
+      console.error('Не удалось перенести старую установку AUTOMAX KG в staging для проверки целостности', err);
+    }
+  }
+
   fs.mkdirSync(AUTOMAXKG_STAGING_DIR, { recursive: true });
   const total = files.length;
   let done = 0;
@@ -673,6 +700,13 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
     console.error('Скачано, но не удалось выставить атрибуты "скрытый"/"системный"', attrErr);
   }
   restrictAccessToCurrentUser(AUTOMAXKG_DIR);
+
+  // Пишется последним, уже после переноса и атрибутов/прав — см. комментарий
+  // у AUTOMAXKG_COMPLETE_MARKER выше. Если процесс прервётся раньше этой
+  // строки по любой причине, при следующем запуске isAutomaxKgPresent()
+  // вернёт false и программа перекачает всё заново, а не будет молча
+  // работать с потенциально неполной установкой.
+  fs.writeFileSync(AUTOMAXKG_COMPLETE_MARKER, '');
 
   return { ok: true };
 });
