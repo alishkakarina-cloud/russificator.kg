@@ -629,7 +629,17 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
   // ожидаемым размером — считаем его готовым и просто пропускаем, не качая
   // повторно. Размер — из automaxkg-manifest (подписан сервером), подделать
   // с клиента нельзя, так что ложно "готовым" файл считаться не может.
-  for (const f of files) {
+  //
+  // ПАРАЛЛЕЛЬНО, не по одному: раньше файлы качались строго последовательно
+  // (await внутри for) — для ~3ГБ, разбитых на много отдельных файлов, это
+  // не использовало доступную полосу пропускания, каждый файл ждал
+  // завершения предыдущего впустую. Тот же пул воркеров, что и у
+  // secureWipeDir (runPool) — один воркер сам ловит свою ошибку и
+  // останавливается, не хватая новых файлов, остальные доканчивают начатое,
+  // и только потом наверх уходит первая пойманная ошибка.
+  const DOWNLOAD_CONCURRENCY = 6;
+
+  async function downloadOne(f) {
     const destPath = path.join(AUTOMAXKG_STAGING_DIR, ...f.path.split('/'));
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
@@ -638,7 +648,7 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
         if (fs.statSync(destPath).size === f.size) {
           done++;
           event.sender.send('automaxkg-download-progress', { done, total });
-          continue;
+          return;
         }
       } catch {}
       // Есть, но размер не совпадает (обрыв на середине в прошлый раз) —
@@ -668,11 +678,17 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
       }
     }
     if (!ok) {
-      return { ok: false, error: `Не удалось скачать ${f.path}: ${lastErr?.message || lastErr}` };
+      throw new Error(`Не удалось скачать ${f.path}: ${lastErr?.message || lastErr}`);
     }
 
     done++;
     event.sender.send('automaxkg-download-progress', { done, total });
+  }
+
+  try {
+    await runPool(files, downloadOne, DOWNLOAD_CONCURRENCY);
+  } catch (err) {
+    return { ok: false, error: err.message };
   }
 
   try {

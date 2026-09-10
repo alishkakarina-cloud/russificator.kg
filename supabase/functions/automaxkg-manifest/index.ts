@@ -25,21 +25,27 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+// Структура AUTOMAX KG глубоко вложенная (tinove/timove/IflytekSpeech/...) —
+// раньше подпапки обходились строго по одной (await внутри for), то есть
+// время построения манифеста росло с глубиной/шириной дерева как сумма
+// отдельных сетевых кругов до Storage API. Здесь все записи текущего уровня
+// (и, рекурсивно, их вложенные обходы) запускаются одновременно —
+// Promise.all ждёт их все, но сами запросы идут параллельно, а не по очереди.
 async function listAllFiles(prefix: string): Promise<{ path: string; size: number }[]> {
   const { data: entries, error } = await supabase.storage.from(BUCKET).list(prefix, { limit: 1000 });
   if (error || !entries) return [];
 
-  const files: { path: string; size: number }[] = [];
-  for (const entry of entries) {
-    const entryPath = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.id === null) {
-      // Папка (у файлов Supabase Storage всегда проставляет id).
-      files.push(...(await listAllFiles(entryPath)));
-    } else {
-      files.push({ path: entryPath, size: entry.metadata?.size ?? 0 });
-    }
-  }
-  return files;
+  const groups = await Promise.all(
+    entries.map(async (entry): Promise<{ path: string; size: number }[]> => {
+      const entryPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.id === null) {
+        // Папка (у файлов Supabase Storage всегда проставляет id).
+        return listAllFiles(entryPath);
+      }
+      return [{ path: entryPath, size: entry.metadata?.size ?? 0 }];
+    })
+  );
+  return groups.flat();
 }
 
 async function resolveTelegramUser(loginToken: string) {
