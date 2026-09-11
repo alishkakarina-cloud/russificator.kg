@@ -319,6 +319,26 @@ function killActivePty() {
   killOrphanedAdbProcesses();
 }
 
+// Отличаем "сервер недоступен/нет интернета" (ENOTFOUND у DNS, отказ в
+// соединении, таймаут) от прочих ошибок закачки (битый файл, нет места на
+// диске и т.п.) — чтобы пользователю показывалось точное по смыслу
+// сообщение, а не техническая строка вида "getaddrinfo ENOTFOUND ...".
+// Коды — стандартные для Node.js net/dns на уровне TCP-соединения.
+const NETWORK_ERROR_CODES = new Set([
+  'ENOTFOUND',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'ECONNABORTED',
+]);
+
+function isNetworkError(err) {
+  return Boolean(err && NETWORK_ERROR_CODES.has(err.code));
+}
+
 // Скачивает один файл по прямой (подписанной) ссылке в destPath, следуя
 // редиректам вручную — Supabase Storage сам по себе не редиректит, но код
 // написан на случай, если ссылка когда-то будет проксироваться через CDN.
@@ -655,9 +675,17 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
       // это будет перекачано ниже как обычно, не как "готовый" файл.
     }
 
+    // Автоматические попытки ДО показа ошибки пользователю: обрыв сети
+    // часто кратковременный (пара секунд нестабильного интернета), и без
+    // паузы между попытками повторный запрос почти сразу упирается в ту же
+    // самую временную проблему. Пауза растёт с номером попытки — не имеет
+    // смысла долбить сервер/DNS без задержки, если первая попытка уже не
+    // удалась.
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAY_MS = 1500;
     let lastErr = null;
     let ok = false;
-    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+    for (let attempt = 0; attempt < MAX_ATTEMPTS && !ok; attempt++) {
       try {
         await downloadToFile(f.url, destPath);
         // Проверка целостности: без неё оборванная на середине закачка
@@ -675,10 +703,20 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
         try {
           fs.rmSync(destPath, { force: true });
         } catch {}
+        if (attempt < MAX_ATTEMPTS - 1) {
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS * (attempt + 1)));
+        }
       }
     }
     if (!ok) {
-      throw new Error(`Не удалось скачать ${f.path}: ${lastErr?.message || lastErr}`);
+      // Полная техническая причина (код ошибки Node, HTTP-статус и т.п.)
+      // остаётся в логе для диагностики — пользователю в интерфейсе
+      // показывается уже упрощённая формулировка (см. errorType ниже и
+      // ensureAutomaxKgReady в renderer.js), но не здесь и не вместо этого.
+      log.error(`Не удалось скачать ${f.path} после ${MAX_ATTEMPTS} попыток`, lastErr);
+      const err = new Error(`Не удалось скачать ${f.path}: ${lastErr?.message || lastErr}`);
+      err.errorType = isNetworkError(lastErr) ? 'network' : 'other';
+      throw err;
     }
 
     done++;
@@ -688,7 +726,7 @@ ipcMain.handle('automaxkg-download', async (event, { files }) => {
   try {
     await runPool(files, downloadOne, DOWNLOAD_CONCURRENCY);
   } catch (err) {
-    return { ok: false, error: err.message };
+    return { ok: false, error: err.message, errorType: err.errorType || 'other' };
   }
 
   try {

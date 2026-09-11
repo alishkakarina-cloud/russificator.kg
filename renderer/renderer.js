@@ -162,11 +162,23 @@ async function ensureAutomaxKgReady(loginToken) {
     const { files } = await callFunction('automaxkg-manifest', { loginToken });
     downloadProgressText.textContent = `Скачано 0 из ${files.length} файлов (0%)`;
     const result = await window.automaxkg.download(files);
-    if (!result.ok) throw new Error(result.error);
+    if (!result.ok) {
+      const err = new Error(result.error);
+      err.errorType = result.errorType;
+      throw err;
+    }
     return true;
   } catch (err) {
+    // Полная техническая причина — в лог (main.js уже сохранил её в
+    // main.log через log.error; здесь дублируем в консоль рендерера для
+    // отладки прямо в DevTools) — пользователю ниже показывается только
+    // понятная формулировка, а не "getaddrinfo ENOTFOUND ...".
+    console.error('Ошибка загрузки файлов AUTOMAX KG', err);
     downloadErrorEl.hidden = false;
-    downloadErrorEl.textContent = 'Ошибка: ' + err.message;
+    downloadErrorEl.textContent =
+      err.errorType === 'network'
+        ? 'Не удалось подключиться к серверу для загрузки файлов. Проверьте подключение к интернету и нажмите «Повторить».'
+        : 'Ошибка: ' + err.message;
     downloadRetryBtn.hidden = false;
     return false;
   }
