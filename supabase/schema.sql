@@ -11,7 +11,13 @@ create table if not exists public.telegram_login_tokens (
   status text not null default 'pending_telegram',
   decided_at timestamptz,
   decided_by bigint,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- 'login' (обычный вход) или 'register' (одноразовое подтверждение
+  -- личности при регистрации по никнейму/паролю) — см. telegram-webhook,
+  -- register-account, login-account. Раньше эта колонка была задеплоена
+  -- в Supabase напрямую и отсутствовала в этом файле — добавлена задним
+  -- числом, чтобы schema.sql снова совпадал с реальной структурой прода.
+  purpose text not null default 'login'
 );
 
 alter table public.telegram_login_tokens enable row level security;
@@ -204,3 +210,33 @@ create table if not exists public.activation_requests (
 );
 
 alter table public.activation_requests enable row level security;
+
+-- Вайтлист Telegram-юзернеймов (нижний регистр, без "@") — регистрация и
+-- вход возможны только если юзернейм заранее сюда добавлен администратором.
+-- См. telegram-webhook (проверка при /start) и admin-action
+-- (list_whitelist/add_whitelist_username/remove_whitelist_username).
+-- Была задеплоена в Supabase напрямую и отсутствовала в этом файле —
+-- добавлена задним числом, см. комментарий у purpose выше.
+create table if not exists public.telegram_username_whitelist (
+  username text primary key,
+  added_by bigint,
+  added_at timestamptz not null default now()
+);
+
+alter table public.telegram_username_whitelist enable row level security;
+
+-- Регистрация по никнейму/паролю (альтернатива входу через Telegram для
+-- обычных, не-админских аккаунтов) — см. register-account (создание) и
+-- login-account (вход). Личность всё равно подтверждается через Telegram
+-- один раз при регистрации (purpose='register' в telegram_login_tokens),
+-- пароль хранится только как bcrypt-хэш. Была задеплоена в Supabase
+-- напрямую и отсутствовала в этом файле — добавлена задним числом, см.
+-- комментарий у purpose выше.
+create table if not exists public.local_accounts (
+  telegram_id bigint primary key references public.telegram_users(telegram_id),
+  nickname text not null unique,
+  password_hash text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.local_accounts enable row level security;
