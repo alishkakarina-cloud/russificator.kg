@@ -309,6 +309,21 @@ async function tryLocalSession() {
   }
   if (!session) return false;
 
+  // Защита от старой/битой локальной сессии — например, сохранённой ещё до
+  // того, как в её структуру добавили поле loginToken. Такая сессия
+  // не null (проверка выше её пропускает), но без валидного токена ни один
+  // серверный запрос всё равно не пройдёт (сервер ответит "action и
+  // loginToken обязательны") — раньше это тихо доходило до главного экрана
+  // и падало только на реальном действии типа "Активация". Отдельная
+  // защита нужна и для lastActivityAt: без него Date.now() - undefined даёт
+  // NaN, а NaN > SESSION_MS в JS всегда false — то есть проверка протухания
+  // ниже никогда не сработала бы для такой сессии, она осталась бы битой
+  // навсегда. Считаем сессию без этих полей недействительной сразу.
+  if (!session.loginToken || typeof session.lastActivityAt !== 'number') {
+    await window.sessionStore.clear();
+    return false;
+  }
+
   // Оба запроса независимы (ни один не использует результат другого) —
   // запускаем параллельно вместо друг за другом, это отдаёт главный экран
   // на один сетевой круг быстрее при каждом старте/резюме приложения.
@@ -715,7 +730,10 @@ async function activateSelectedCar() {
   if (!selectedCarModel) return;
   const model = selectedCarModel;
   const session = await window.sessionStore.get();
-  if (!session) {
+  // См. комментарий в tryLocalSession — без loginToken запрос ниже гарантированно
+  // упадёт с "action и loginToken обязательны", лучше сразу отправить на вход.
+  if (!session || !session.loginToken) {
+    await window.sessionStore.clear();
     showScreen('login');
     return;
   }
