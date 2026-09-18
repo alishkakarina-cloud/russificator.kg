@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('automaxkg', {
   onDownloadProgress: (callback) => {
     ipcRenderer.on('automaxkg-download-progress', (_event, data) => callback(data));
   },
-  startTerminal: (cols, rows) => ipcRenderer.invoke('automaxkg-terminal-start', { cols, rows }),
+  startTerminal: (cols, rows, engineId) => ipcRenderer.invoke('automaxkg-terminal-start', { cols, rows, engineId }),
   sendInput: (data) => ipcRenderer.send('automaxkg-terminal-input', data),
   resizeTerminal: (cols, rows) => ipcRenderer.send('automaxkg-terminal-resize', { cols, rows }),
   killTerminal: () => ipcRenderer.invoke('automaxkg-terminal-kill'),
