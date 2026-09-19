@@ -84,7 +84,14 @@ create table if not exists public.car_models (
   brand text not null,
   model text not null,
   price integer not null,
-  sort_order integer not null default 0
+  sort_order integer not null default 0,
+  -- Какой движок обработки запускать для этой модели — ключ из реестра
+  -- ENGINES в main.js (см. комментарий там). По умолчанию 'automaxkg' —
+  -- всё, что уже было в каталоге до появления реестра движков, продолжает
+  -- работать через AUTOMAX KG без единой правки строк. Новая модель с другим
+  -- движком (например, будущий CHANGAN X5 Plus) — это просто ещё одна
+  -- строка с другим значением здесь, без изменений кода.
+  engine text not null default 'automaxkg'
 );
 
 alter table public.car_models enable row level security;
@@ -102,11 +109,18 @@ insert into public.car_models (brand, model, price, sort_order) values
   ('CHANGAN', 'UNI-V', 3500, 5)
 on conflict do nothing;
 
+-- Существующие БД (задеплоенные до появления колонки engine) эту строку
+-- не тронет — "add column if not exists" безопасно выполнить повторно,
+-- а default 'automaxkg' у уже вставленных выше строк подставится сам.
+alter table public.car_models add column if not exists engine text not null default 'automaxkg';
+
 -- Сессии работы с конкретной машиной. Создаётся Edge Function car-session
 -- (action start) при запуске AUTOMAX KG из выпадающего списка, закрывается
 -- ею же (action finish) по кнопке "Завершено". paid переключает только
 -- admin-action. Никаких anon-политик — все чтения/записи идут через эти
 -- две Edge Functions (service_role), с проверкой личности по токену входа.
+-- engine — какой движок реально обрабатывал эту сессию (для истории/логов,
+-- на случай если каталог позже поменяет движок для той же марки/модели).
 create table if not exists public.car_sessions (
   id uuid primary key default gen_random_uuid(),
   telegram_id bigint not null,
@@ -114,12 +128,15 @@ create table if not exists public.car_sessions (
   telegram_name text,
   brand text not null,
   model text not null,
+  engine text not null default 'automaxkg',
   started_at timestamptz not null default now(),
   ended_at timestamptz,
   paid boolean not null default false
 );
 
 alter table public.car_sessions enable row level security;
+
+alter table public.car_sessions add column if not exists engine text not null default 'automaxkg';
 
 -- Полный аудит-лог: вход/одобрение/отклонение/кик (session_id пуст — эти
 -- события ещё не привязаны ни к какой машине), выбор марки/модели, запуск
