@@ -452,17 +452,22 @@ async function enterTerminalScreen(carSess, loginToken) {
   term.onData((data) => window.automaxkg.sendInput(data));
   window.addEventListener('resize', handleTerminalResize);
 
-  terminalStatus.textContent = 'Подготовка AUTOMAX KG...';
-  const result = await window.automaxkg.startTerminal(term.cols, term.rows);
+  // carSess.engine — движок, с которым реально была создана эта сессия на
+  // сервере (см. car-session, action 'start'), а не просто то, что выбрал
+  // клиент — единый источник правды, если они вдруг разойдутся. main.js
+  // сам разрешит неизвестный/пустой engine на automaxkg (см. getEngine),
+  // так что не переданное значение тоже не ломает запуск.
+  terminalStatus.textContent = 'Подготовка программы обработки...';
+  const result = await window.automaxkg.startTerminal(term.cols, term.rows, carSess.engine);
   terminalStatus.textContent = '';
   if (!result.ok) {
-    term.write(`\r\n[Ошибка запуска AUTOMAX KG: ${result.error}]\r\n`);
-    terminalStatus.textContent = 'Не удалось запустить AUTOMAX KG: ' + result.error;
+    term.write(`\r\n[Ошибка запуска: ${result.error}]\r\n`);
+    terminalStatus.textContent = 'Не удалось запустить: ' + result.error;
     await carSession('log_event', {
       loginToken,
       sessionId: carSess.id,
       eventType: 'automaxkg_launch_error',
-      detail: { error: result.error },
+      detail: { error: result.error, engine: carSess.engine },
     }).catch((e) => console.error('Не удалось залогировать ошибку запуска', e));
     return;
   }
@@ -471,6 +476,7 @@ async function enterTerminalScreen(carSess, loginToken) {
     loginToken,
     sessionId: carSess.id,
     eventType: 'automaxkg_launched',
+    detail: { engine: carSess.engine },
   }).catch((e) => console.error('Не удалось залогировать запуск', e));
 }
 
@@ -808,6 +814,7 @@ async function proceedAfterActivationConfirmed(model, loginToken) {
       loginToken,
       brand: model.brand,
       model: model.model,
+      engine: model.engine,
     });
     activeCarSession = carSess;
     status.textContent = '';
