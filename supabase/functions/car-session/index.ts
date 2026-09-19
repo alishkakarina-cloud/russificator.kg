@@ -94,20 +94,24 @@ Deno.serve(async (req) => {
     }
 
     const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
-    const { data, error } = await supabase
-      .from('car_sessions')
-      .insert({
-        telegram_id: user.id,
-        telegram_username: user.username,
-        telegram_name: name,
-        brand: body.brand,
-        model: body.model,
-      })
-      .select()
-      .single();
+    // engine приходит от клиента (тот же объект модели, что и brand/model —
+    // клиент уже получил его из car_models через тот же anon-доступ). Не
+    // передан — не страшно, в БД сработает default 'automaxkg' (см.
+    // schema.sql), так что старые версии приложения без этого поля
+    // продолжают заводить сессии как раньше, без единой ошибки.
+    const insertRow: Record<string, unknown> = {
+      telegram_id: user.id,
+      telegram_username: user.username,
+      telegram_name: name,
+      brand: body.brand,
+      model: body.model,
+    };
+    if (typeof body.engine === 'string' && body.engine) insertRow.engine = body.engine;
+
+    const { data, error } = await supabase.from('car_sessions').insert(insertRow).select().single();
 
     if (error) return json({ error: error.message }, 500);
-    await logEvent(data.id, user.id, 'session_started', { brand: body.brand, model: body.model });
+    await logEvent(data.id, user.id, 'session_started', { brand: body.brand, model: body.model, engine: data.engine });
     return json({ session: data });
   }
 
